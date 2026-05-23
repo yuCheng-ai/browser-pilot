@@ -1,0 +1,28 @@
+{
+  "name": "browser-pilot",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*",
+    "integrations/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,desktop \"npm run dev --workspace @browser-pilot/local-server\" \"npm run dev --workspace @browser-pilot/desktop\"",
+    "dev:desktop": "npm run dev --workspace @browser-pilot/desktop",
+    "dev:server": "npm run dev --workspace @browser-pilot/local-server",
+    "desktop:tauri": "npm run tauri --workspace @browser-pilot/desktop --",
+    "setup:browsers": "playwright install chromium",
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^9.2.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14"
+  },
+  "packageManager": "pnpm@10.22.0+sha512.bf049efe995b28f527fd2b41ae0474ce29186f7edcb3bf545087bd61fbbebb2bf75362d1307fda09c2d288e1e499787ac12d4fcb617a974718a6051f2eee741c"
+}

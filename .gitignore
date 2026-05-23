@@ -1,0 +1,32 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+.vite/
+
+# Tauri and native output
+target/
+*.pdb
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Local runtime data
+storage/sqlite/*
+!storage/sqlite/.gitkeep
+storage/profiles/*
+!storage/profiles/.gitkeep
+storage/snapshots/*
+!storage/snapshots/.gitkeep
+storage/task-runs/*
+!storage/task-runs/.gitkeep
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
