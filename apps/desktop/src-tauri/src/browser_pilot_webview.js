@@ -23,11 +23,11 @@
     "[tabindex]:not([tabindex='-1'])",
   ].join(",");
 
-  function normalizeText(value) {
+  function normalizeText(value, limit = 140) {
     return String(value || "")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 140);
+      .slice(0, limit);
   }
 
   function normalizeUrl(value) {
@@ -146,11 +146,222 @@
       normalizeText(element.getAttribute("aria-label")) ||
       normalizeText(element.getAttribute("placeholder")) ||
       normalizeText(element.getAttribute("title")) ||
+      normalizeText(element.getAttribute("alt")) ||
       normalizeText(element.getAttribute("value")) ||
       normalizeText(element.innerText) ||
       normalizeText(element.textContent) ||
       element.tagName.toLowerCase()
     );
+  }
+
+  function clippedBox(rect) {
+    const x = Math.max(0, rect.x);
+    const y = Math.max(0, rect.y);
+    return {
+      x,
+      y,
+      width: Math.max(0, Math.min(rect.width, innerWidth - x)),
+      height: Math.max(0, Math.min(rect.height, innerHeight - y)),
+    };
+  }
+
+  function readableText(element, limit = 420) {
+    const parts = [
+      element.innerText || element.textContent,
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.getAttribute("placeholder"),
+      element.getAttribute("alt"),
+    ];
+
+    element.querySelectorAll?.("img[alt],img[title],input[placeholder],textarea[placeholder]").forEach(
+      (node) => {
+        parts.push(
+          node.getAttribute("alt"),
+          node.getAttribute("title"),
+          node.getAttribute("placeholder"),
+        );
+      },
+    );
+
+    return normalizeText(parts.filter(Boolean).join(" "), limit);
+  }
+
+  function isReasonableContentRoot(element) {
+    if (!element || element === document.documentElement || element === document.body) {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    const text = readableText(element, 520);
+    const area = rect.width * rect.height;
+    return (
+      text.length >= 6 &&
+      isVisible(element, rect) &&
+      rect.width <= innerWidth * 0.82 &&
+      rect.height <= innerHeight * 0.82 &&
+      area <= innerWidth * innerHeight * 0.24
+    );
+  }
+
+  function nearestReasonableAncestor(element) {
+    let current = element;
+    let best = null;
+
+    while (current && current !== document.body && current !== document.documentElement) {
+      if (isReasonableContentRoot(current)) {
+        best = current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return best || element;
+  }
+
+  function contentRootFor(element) {
+    const explicitRoot = element.closest?.(
+      [
+        "article",
+        "[role='article']",
+        "li",
+        "[data-testid*='card' i]",
+        "[data-testid*='note' i]",
+        "[class*='card' i]",
+        "[class*='note' i]",
+        "[class*='item' i]",
+        "[class*='feed-item' i]",
+      ].join(","),
+    );
+
+    if (isReasonableContentRoot(explicitRoot)) {
+      return explicitRoot;
+    }
+
+    return nearestReasonableAncestor(element);
+  }
+
+  function contentRole(element) {
+    if (
+      element.matches?.(
+        [
+          "article",
+          "[role='article']",
+          "li",
+          "[data-testid*='card' i]",
+          "[data-testid*='note' i]",
+          "[class*='card' i]",
+          "[class*='note' i]",
+        ].join(","),
+      )
+    ) {
+      return "card";
+    }
+
+    if (element.matches?.("h1,h2,h3,[role='heading']")) {
+      return "heading";
+    }
+
+    return "content";
+  }
+
+  function targetContext(element) {
+    const root = contentRootFor(element);
+    const context = readableText(root || element, 280);
+    const label = targetLabel(element);
+    return context && context !== label ? context : "";
+  }
+
+  function boxesIntersect(first, second) {
+    return !(
+      first.x + first.width < second.x ||
+      second.x + second.width < first.x ||
+      first.y + first.height < second.y ||
+      second.y + second.height < first.y
+    );
+  }
+
+  function relatedTargetIds(root, rootBox) {
+    return Array.from(document.querySelectorAll(`[${targetAttribute}]`))
+      .filter((element) => {
+        if (root.contains(element)) {
+          return true;
+        }
+
+        const rect = element.getBoundingClientRect();
+        return boxesIntersect(rootBox, clippedBox(rect));
+      })
+      .map((element) => element.getAttribute(targetAttribute))
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+
+  function inspectContent() {
+    const roots = new Set();
+
+    document.querySelectorAll(`[${targetAttribute}]`).forEach((element) => {
+      roots.add(contentRootFor(element));
+    });
+
+    document
+      .querySelectorAll(
+        [
+          "article",
+          "[role='article']",
+          "li",
+          "h1",
+          "h2",
+          "h3",
+          "p",
+          "[role='heading']",
+          "[class*='title' i]",
+          "[class*='desc' i]",
+          "[class*='content' i]",
+          "[class*='card' i]",
+          "[class*='note' i]",
+        ].join(","),
+      )
+      .forEach((element) => roots.add(contentRootFor(element)));
+
+    const seen = new Set();
+    return Array.from(roots)
+      .filter(Boolean)
+      .map((root) => {
+        const rect = root.getBoundingClientRect();
+        const box = clippedBox(rect);
+        const text = readableText(root, 520);
+        return {
+          root,
+          id: "",
+          role: contentRole(root),
+          text,
+          box,
+          targetIds: relatedTargetIds(root, box),
+        };
+      })
+      .filter((item) => {
+        if (
+          item.text.length < 6 ||
+          item.box.width < 8 ||
+          item.box.height < 8 ||
+          !isReasonableContentRoot(item.root) ||
+          seen.has(item.text)
+        ) {
+          return false;
+        }
+
+        seen.add(item.text);
+        return true;
+      })
+      .sort((first, second) => first.box.y - second.box.y || first.box.x - second.box.x)
+      .slice(0, 35)
+      .map((item, index) => ({
+        id: `content-${index + 1}`,
+        role: item.role,
+        text: item.text,
+        targetIds: item.targetIds,
+        box: item.box,
+      }));
   }
 
   function hasInlineHandler(element) {
@@ -242,14 +453,11 @@
       text: normalizeText(element.innerText || element.textContent),
       ariaLabel: normalizeText(element.getAttribute("aria-label")),
       title: normalizeText(element.getAttribute("title")),
+      alt: normalizeText(element.getAttribute("alt")),
       placeholder: normalizeText(element.getAttribute("placeholder")),
       href: normalizeText(element.getAttribute("href")),
-      box: {
-        x: Math.max(0, rect.x),
-        y: Math.max(0, rect.y),
-        width: Math.min(rect.width, innerWidth - Math.max(0, rect.x)),
-        height: Math.min(rect.height, innerHeight - Math.max(0, rect.y)),
-      },
+      context: targetContext(element),
+      box: clippedBox(rect),
     };
     target.risk = riskFor(target);
     return target;
@@ -270,6 +478,7 @@
   }
 
   function snapshot() {
+    const targets = inspectTargets();
     return {
       title: document.title,
       url: location.href,
@@ -277,7 +486,8 @@
         width: innerWidth,
         height: innerHeight,
       },
-      targets: inspectTargets(),
+      targets,
+      content: inspectContent(),
     };
   }
 

@@ -42,9 +42,22 @@ struct BrowserAgentTarget {
   #[serde(rename = "type")]
   target_type: String,
   #[serde(default)]
+  context: String,
+  #[serde(default)]
   risk: Option<BrowserTargetRisk>,
   #[serde(rename = "box")]
   target_box: BrowserTargetBox,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserContentItem {
+  id: String,
+  role: String,
+  text: String,
+  #[serde(default, rename = "targetIds")]
+  target_ids: Vec<String>,
+  #[serde(rename = "box")]
+  content_box: BrowserTargetBox,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -59,6 +72,8 @@ struct BrowserAgentSnapshot {
   url: String,
   viewport: BrowserViewport,
   targets: Vec<BrowserAgentTarget>,
+  #[serde(default)]
+  content: Vec<BrowserContentItem>,
 }
 
 #[derive(Clone, Deserialize)]

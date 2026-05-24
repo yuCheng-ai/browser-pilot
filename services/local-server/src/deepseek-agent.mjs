@@ -1,12 +1,19 @@
 const fallbackModel = "deepseek-v4-flash";
 
 export async function planBrowserAction({ apiKey, model, message, state }) {
-  const targets = state.targets.slice(0, 40).map((target) => ({
+  const targets = state.targets.slice(0, 70).map((target) => ({
     id: target.id,
     label: target.label,
     tag: target.tag,
     type: target.type,
+    context: target.context || "",
     risk: target.risk?.level || "none",
+  }));
+  const pageContent = (state.content || []).slice(0, 35).map((item) => ({
+    id: item.id,
+    role: item.role,
+    text: item.text,
+    targetIds: item.targetIds || [],
   }));
 
   const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
@@ -21,7 +28,7 @@ export async function planBrowserAction({ apiKey, model, message, state }) {
         type: "disabled",
       },
       temperature: 0.1,
-      max_tokens: 700,
+      max_tokens: 900,
       response_format: {
         type: "json_object",
       },
@@ -34,6 +41,9 @@ export async function planBrowserAction({ apiKey, model, message, state }) {
             "Use DOM target ids to click or type; never invent target ids.",
             "The visible page is already open in a Tauri WebView. You only plan; BrowserPilot executes the action in that live WebView.",
             "Clicks are executed later from DOM bounding boxes by native mouse coordinates.",
+            "The page.content list contains readable visible page blocks and feed cards. Use it to understand page content, not just buttons.",
+            "When the user refers to a title, card, author, topic, or visible text, match it against page.content first, then choose a related target id from targetIds or a target whose context matches.",
+            "If the request depends on visual pixels inside an image and no readable text or alt text describes it, say this version cannot identify that image visually yet and return no action.",
             "For search tasks, choose the best search input target and return a type action with submit:true.",
             "For navigation requests, return navigate with the absolute URL.",
             "For clicking visible page text or buttons, return click with the matching target id.",
@@ -49,6 +59,7 @@ export async function planBrowserAction({ apiKey, model, message, state }) {
             page: {
               title: state.title,
               url: state.url,
+              content: pageContent,
               targets,
             },
           }),

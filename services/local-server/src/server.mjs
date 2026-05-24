@@ -246,6 +246,7 @@ function normalizeExternalBrowserState(state) {
   }
 
   const targets = Array.isArray(state.targets) ? state.targets : [];
+  const content = Array.isArray(state.content) ? state.content : [];
   return {
     title: String(state.title || ""),
     url: String(state.url || ""),
@@ -255,7 +256,16 @@ function normalizeExternalBrowserState(state) {
       label: String(target.label || ""),
       tag: String(target.tag || ""),
       type: String(target.type || target.tag || ""),
+      context: String(target.context || "").slice(0, 320),
       risk: target.risk || null,
+    })),
+    content: content.slice(0, 35).map((item) => ({
+      id: String(item.id || ""),
+      role: String(item.role || "content"),
+      text: String(item.text || "").slice(0, 560),
+      targetIds: Array.isArray(item.targetIds)
+        ? item.targetIds.map((targetId) => String(targetId || "")).filter(Boolean).slice(0, 8)
+        : [],
     })),
   };
 }

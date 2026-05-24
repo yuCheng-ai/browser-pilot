@@ -67,10 +67,17 @@ type BrowserAgentSnapshot = {
     label: string;
     tag: string;
     type: string;
+    context?: string;
     risk?: {
       level: string;
       reason: string;
     } | null;
+  }>;
+  content?: Array<{
+    id: string;
+    role: string;
+    text: string;
+    targetIds?: string[];
   }>;
 };
 
