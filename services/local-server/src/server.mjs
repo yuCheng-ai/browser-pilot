@@ -6,7 +6,15 @@ import {
   BrowserPilotSession,
   RiskBlockedError,
 } from "../../../integrations/playwright/src/index.mjs";
-import { planBrowserAction } from "./deepseek-agent.mjs";
+import {
+  executeWebViewCdpAction,
+  webViewCdpStatus,
+} from "../../../integrations/playwright/src/webview-cdp.mjs";
+import {
+  buildAgentObservations,
+  planBrowserAction,
+} from "./deepseek-agent.mjs";
+import { buildVisionContext } from "../../../packages/vision-inspector/src/index.mjs";
 
 const serviceDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(serviceDir, "../../..");
@@ -78,6 +86,24 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/api/webview-cdp/status") {
+      sendJson(response, 200, await webViewCdpStatus());
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/webview-cdp/execute") {
+      const payload = await readJson(request);
+      sendJson(response, 200, await executeWebViewCdpAction(payload));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/agent/observe") {
+      const payload = await readJson(request);
+      const result = buildExternalBrowserObservations(payload);
+      sendJson(response, 200, result);
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/agent/plan") {
       const payload = await readJson(request);
       const result = await planExternalBrowserTurn(payload);
@@ -106,6 +132,7 @@ const server = createServer(async (request, response) => {
 
     sendJson(response, 500, {
       error: error instanceof Error ? error.message : "本地服务异常。",
+      debug: error && typeof error === "object" ? error.debug || null : null,
     });
   }
 });
@@ -113,6 +140,23 @@ const server = createServer(async (request, response) => {
 server.listen(port, "127.0.0.1", () => {
   console.log(`BrowserPilot local server listening on http://127.0.0.1:${port}`);
 });
+
+function buildExternalBrowserObservations(payload) {
+  const message = String(payload?.message || "").trim();
+  const state = normalizeExternalBrowserState(payload?.state);
+  const observations = buildAgentObservations({
+    budgetName: payload?.budget || "normal",
+    message,
+    observation: payload?.observation,
+    progress: payload?.progress,
+    state,
+    vision: buildVisionContext({ message, state }),
+  });
+
+  return {
+    observations,
+  };
+}
 
 async function planExternalBrowserTurn(payload) {
   const message = String(payload?.message || "").trim();
@@ -125,16 +169,21 @@ async function planExternalBrowserTurn(payload) {
     throw new Error("先在设置中保存 DeepSeek API Key。");
   }
 
+  const state = normalizeExternalBrowserState(payload?.state);
   const plan = await planBrowserAction({
     apiKey: settings.deepSeekApiKey,
     model: settings.model,
     message,
-    state: normalizeExternalBrowserState(payload?.state),
+    observation: payload?.observation,
+    state,
+    vision: buildVisionContext({ message, state }),
+    progress: payload?.progress,
   });
 
   return {
     message: plan.reply,
     action: plan.action,
+    debug: plan.debug || null,
   };
 }
 
@@ -149,11 +198,13 @@ async function runChatTurn(message) {
   }
 
   const state = await session.snapshot();
+  const normalizedMessage = String(message).trim();
   const plan = await planBrowserAction({
     apiKey: settings.deepSeekApiKey,
     model: settings.model,
-    message: String(message).trim(),
+    message: normalizedMessage,
     state,
+    vision: buildVisionContext({ message: normalizedMessage, state }),
   });
 
   if (plan.action.type === "navigate") {
@@ -221,7 +272,6 @@ async function saveSettings(payload) {
 
 function normalizeSettings(value) {
   const allowedModels = new Set([
-    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "deepseek-chat",
     "deepseek-reasoner",
@@ -229,7 +279,7 @@ function normalizeSettings(value) {
 
   return {
     deepSeekApiKey: String(value.deepSeekApiKey || "").trim(),
-    model: allowedModels.has(value.model) ? value.model : "deepseek-v4-flash",
+    model: allowedModels.has(value.model) ? value.model : "deepseek-v4-pro",
   };
 }
 
@@ -247,27 +297,172 @@ function normalizeExternalBrowserState(state) {
 
   const targets = Array.isArray(state.targets) ? state.targets : [];
   const content = Array.isArray(state.content) ? state.content : [];
+  const blocks = Array.isArray(state.blocks) ? state.blocks : content;
+  const regions = Array.isArray(state.regions) ? state.regions : [];
+  const inputs = Array.isArray(state.inputs) ? state.inputs : [];
+  const relations = Array.isArray(state.relations) ? state.relations : [];
+  const visuals = Array.isArray(state.visuals) ? state.visuals : [];
   return {
+    schemaVersion: String(state.schemaVersion || "page-json-v0"),
     title: String(state.title || ""),
     url: String(state.url || ""),
     viewport: state.viewport || { width: 0, height: 0 },
+    state: normalizePageState(state.state),
+    regions: regions.slice(0, 32).map((region) => ({
+      id: String(region.id || ""),
+      role: String(region.role || "section"),
+      label: String(region.label || "").slice(0, 180),
+      text: String(region.text || "").slice(0, 360),
+      box: region.box || null,
+      targetIds: normalizeIdList(region.targetIds, 40),
+      blockIds: normalizeIdList(region.blockIds, 40),
+      inputIds: normalizeIdList(region.inputIds, 24),
+      visualIds: normalizeIdList(region.visualIds, 24),
+    })),
+    blocks: blocks.slice(0, 45).map((item) => ({
+      id: String(item.id || ""),
+      kind: String(item.kind || item.role || "content"),
+      role: String(item.role || "content"),
+      text: String(item.text || "").slice(0, 700),
+      targetIds: normalizeIdList(item.targetIds, 10),
+      regionId: String(item.regionId || ""),
+      box: item.box || null,
+    })),
     targets: targets.map((target) => ({
       id: String(target.id || ""),
+      selector: String(target.selector || "").slice(0, 500),
       label: String(target.label || ""),
       tag: String(target.tag || ""),
       type: String(target.type || target.tag || ""),
+      text: String(target.text || "").slice(0, 240),
+      ariaLabel: String(target.ariaLabel || "").slice(0, 180),
+      title: String(target.title || "").slice(0, 180),
+      alt: String(target.alt || "").slice(0, 180),
+      placeholder: String(target.placeholder || "").slice(0, 180),
+      href: String(target.href || "").slice(0, 300),
+      value: String(target.value || "").slice(0, 180),
       context: String(target.context || "").slice(0, 320),
+      visibility: String(target.visibility || "visible"),
+      interaction: normalizeInteraction(target.interaction),
+      semantics: normalizeSemantics(target.semantics),
+      regionId: String(target.regionId || ""),
+      blockId: String(target.blockId || ""),
+      box: target.box || null,
       risk: target.risk || null,
     })),
     content: content.slice(0, 35).map((item) => ({
       id: String(item.id || ""),
+      kind: String(item.kind || item.role || "content"),
       role: String(item.role || "content"),
       text: String(item.text || "").slice(0, 560),
-      targetIds: Array.isArray(item.targetIds)
-        ? item.targetIds.map((targetId) => String(targetId || "")).filter(Boolean).slice(0, 8)
-        : [],
+      targetIds: normalizeIdList(item.targetIds, 8),
+      regionId: String(item.regionId || ""),
+      box: item.box || null,
+    })),
+    inputs: inputs.slice(0, 40).map((item) => ({
+      id: String(item.id || ""),
+      targetId: String(item.targetId || ""),
+      name: String(item.name || "").slice(0, 160),
+      inputType: String(item.inputType || "").slice(0, 80),
+      placeholder: String(item.placeholder || "").slice(0, 180),
+      value: String(item.value || "").slice(0, 180),
+      context: String(item.context || "").slice(0, 260),
+      active: Boolean(item.active),
+      multiline: Boolean(item.multiline),
+      box: item.box || null,
+      regionId: String(item.regionId || ""),
+      blockId: String(item.blockId || ""),
+    })),
+    relations: relations.slice(0, 220).map((item) => ({
+      type: String(item.type || ""),
+      from: String(item.from || ""),
+      to: String(item.to || ""),
+      confidence: Number.isFinite(Number(item.confidence))
+        ? Number(item.confidence)
+        : 0,
+    })),
+    visuals: visuals.slice(0, 30).map((item) => ({
+      id: String(item.id || ""),
+      kind: String(item.kind || "visual"),
+      alt: String(item.alt || "").slice(0, 220),
+      title: String(item.title || "").slice(0, 220),
+      ariaLabel: String(item.ariaLabel || "").slice(0, 220),
+      nearbyText: String(item.nearbyText || "").slice(0, 420),
+      targetIds: normalizeIdList(item.targetIds, 8),
+      regionId: String(item.regionId || ""),
+      box: item.box || null,
     })),
   };
+}
+
+function normalizePageState(state) {
+  if (!state || typeof state !== "object") {
+    return {
+      readyState: "",
+      activeTargetId: "",
+      hasModal: false,
+      hasOverlay: false,
+      scroll: { x: 0, y: 0, maxX: 0, maxY: 0 },
+    };
+  }
+
+  const scroll = state.scroll && typeof state.scroll === "object" ? state.scroll : {};
+  return {
+    readyState: String(state.readyState || ""),
+    activeTargetId: String(state.activeTargetId || ""),
+    hasModal: Boolean(state.hasModal),
+    hasOverlay: Boolean(state.hasOverlay),
+    scroll: {
+      x: Number(scroll.x) || 0,
+      y: Number(scroll.y) || 0,
+      maxX: Number(scroll.maxX) || 0,
+      maxY: Number(scroll.maxY) || 0,
+    },
+  };
+}
+
+function normalizeInteraction(interaction) {
+  if (!interaction || typeof interaction !== "object") {
+    return {
+      clickable: false,
+      editable: false,
+      selectable: false,
+      scrollable: false,
+    };
+  }
+
+  return {
+    clickable: Boolean(interaction.clickable),
+    editable: Boolean(interaction.editable),
+    selectable: Boolean(interaction.selectable),
+    scrollable: Boolean(interaction.scrollable),
+  };
+}
+
+function normalizeSemantics(semantics) {
+  if (!semantics || typeof semantics !== "object") {
+    return {
+      kind: "",
+      role: "",
+      intentHints: [],
+      confidence: 0,
+    };
+  }
+
+  return {
+    kind: String(semantics.kind || "").slice(0, 80),
+    role: String(semantics.role || "").slice(0, 80),
+    intentHints: normalizeIdList(semantics.intentHints, 10),
+    confidence: Number.isFinite(Number(semantics.confidence))
+      ? Number(semantics.confidence)
+      : 0,
+  };
+}
+
+function normalizeIdList(value, limit) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || "")).filter(Boolean).slice(0, limit)
+    : [];
 }
 
 async function readJson(request) {

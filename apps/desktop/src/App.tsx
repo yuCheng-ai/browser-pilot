@@ -50,34 +50,230 @@ type BrowserAgentAction = {
   submit?: boolean;
 };
 
+type AgentObservationSummary = {
+  source?: string;
+  mode?: string;
+  query?: string;
+  kind?: string;
+  diff?: AgentDiffSummary;
+  regions?: number;
+  blocks?: number;
+  targets?: number;
+  inputs?: number;
+  relations?: number;
+  visuals?: number;
+  totalRegions?: number;
+  totalBlocks?: number;
+  totalTargets?: number;
+  totalInputs?: number;
+};
+
+type AgentDiffSummary = {
+  activeChanged?: boolean;
+  newEditableInputs?: number;
+  updatedEditableInputs?: number;
+  actionButtons?: number;
+  targetsAdded?: number;
+  targetsUpdated?: number;
+  targetsDisappeared?: number;
+  regionsChanged?: number;
+  candidateActions?: number;
+};
+
 type BrowserAgentPlan = {
   message: string;
   action: BrowserAgentAction;
+  debug?: {
+    stage?: string;
+    model?: string;
+    budget?: string;
+    retries?: number;
+    previousError?: string;
+    observation?: AgentObservationSummary;
+  } | null;
 };
 
 type BrowserAgentSnapshot = {
+  schemaVersion?: string;
   title: string;
   url: string;
   viewport: {
     width: number;
     height: number;
   };
+  state?: {
+    readyState?: string;
+    activeTargetId?: string;
+    hasModal?: boolean;
+    hasOverlay?: boolean;
+    scroll?: {
+      x: number;
+      y: number;
+      maxX: number;
+      maxY: number;
+    };
+  };
+  regions?: Array<{
+    id: string;
+    role: string;
+    label: string;
+    text?: string;
+    box?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    targetIds?: string[];
+    blockIds?: string[];
+    inputIds?: string[];
+    visualIds?: string[];
+  }>;
   targets: Array<{
     id: string;
+    selector?: string;
     label: string;
     tag: string;
     type: string;
+    text?: string;
+    ariaLabel?: string;
+    title?: string;
+    alt?: string;
+    placeholder?: string;
+    href?: string;
+    value?: string;
     context?: string;
+    box?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    visibility?: string;
+    interaction?: {
+      clickable?: boolean;
+      editable?: boolean;
+      selectable?: boolean;
+      scrollable?: boolean;
+    };
+    semantics?: {
+      kind?: string;
+      role?: string;
+      intentHints?: string[];
+      confidence?: number;
+    };
+    regionId?: string;
+    blockId?: string;
     risk?: {
       level: string;
       reason: string;
     } | null;
   }>;
-  content?: Array<{
+  blocks?: Array<{
     id: string;
+    kind?: string;
     role: string;
     text: string;
     targetIds?: string[];
+    regionId?: string;
+    box?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+  }>;
+  content?: Array<{
+    id: string;
+    kind?: string;
+    role: string;
+    text: string;
+    targetIds?: string[];
+    regionId?: string;
+    box?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+  }>;
+  inputs?: Array<{
+    id: string;
+    targetId: string;
+    name?: string;
+    inputType?: string;
+    placeholder?: string;
+    value?: string;
+    context?: string;
+    active?: boolean;
+    multiline?: boolean;
+    box?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    regionId?: string;
+    blockId?: string;
+  }>;
+  visuals?: Array<{
+    id: string;
+    kind: string;
+    alt?: string;
+    title?: string;
+    ariaLabel?: string;
+    nearbyText?: string;
+    targetIds?: string[];
+    regionId?: string;
+  }>;
+  relations?: Array<{
+    type: string;
+    from: string;
+    to: string;
+    confidence?: number;
+  }>;
+};
+
+type BrowserObservationEnvelope = {
+  kind: "full" | "patch";
+  schemaVersion?: string;
+  sequence?: number;
+  snapshot: BrowserAgentSnapshot;
+  patch?: BrowserActionablePatch | null;
+};
+
+type BrowserActionablePatch = {
+  schemaVersion?: string;
+  sequence?: number;
+  title?: string;
+  url?: string;
+  activeElement?: {
+    changed?: boolean;
+    previousTargetId?: string;
+    currentTargetId?: string;
+    current?: BrowserAgentSnapshot["targets"][number] | null;
+  };
+  editableInputs?: {
+    active?: BrowserAgentSnapshot["inputs"] extends Array<infer T> ? T | null : unknown;
+    added?: BrowserAgentSnapshot["inputs"];
+    updated?: BrowserAgentSnapshot["inputs"];
+  };
+  actionButtons?: {
+    addedOrUpdated?: BrowserAgentSnapshot["targets"];
+  };
+  targets?: {
+    added?: BrowserAgentSnapshot["targets"];
+    updated?: BrowserAgentSnapshot["targets"];
+    disappeared?: BrowserAgentSnapshot["targets"];
+  };
+  regions?: {
+    changed?: BrowserAgentSnapshot["regions"];
+  };
+  summary?: AgentDiffSummary;
+  candidateActions?: Array<{
+    action?: string;
+    targetId?: string;
+    reason?: string;
   }>;
 };
 
@@ -97,7 +293,34 @@ type BrowserAgentResult = {
   };
 };
 
+type AgentDriver = "playwright" | "native";
+
+type AgentStepHistory = {
+  action: string;
+  reply: string;
+  target: string;
+  targetId?: string;
+  text?: string;
+  submitted?: boolean;
+  url: string;
+};
+
+type AgentTraceItem = {
+  id: string;
+  step: number;
+  phase: "observe" | "plan" | "action" | "result" | "error";
+  title: string;
+  detail: string;
+};
+
 const desktopStartUrl = "https://www.baidu.com";
+const defaultAgentModel = "deepseek-v4-pro";
+const agentModelOptions = [
+  "deepseek-v4-pro",
+  "deepseek-chat",
+  "deepseek-reasoner",
+];
+const maxAgentSteps = 8;
 
 const initialMessages: ChatMessage[] = [
   {
@@ -116,13 +339,66 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
     ...options,
   });
 
-  const payload = (await response.json()) as T & { error?: string };
+  const payload = (await response.json()) as T & { error?: string; debug?: unknown };
 
   if (!response.ok) {
-    throw new Error(payload.error || "请求失败。");
+    throw new Error(formatApiError(payload.error || "请求失败。", payload.debug));
   }
 
   return payload;
+}
+
+function formatApiError(message: string, debug: unknown) {
+  if (!debug || typeof debug !== "object") {
+    return message;
+  }
+
+  const details = debug as {
+    attempts?: Array<{
+      model?: string;
+      budget?: string;
+      stage?: string;
+      timeoutMs?: number;
+      requestBytes?: number;
+      elapsedMs?: number;
+      error?: string;
+      observation?: AgentObservationSummary;
+    }>;
+    page?: {
+      schemaVersion?: string;
+      regions?: number;
+      blocks?: number;
+      targets?: number;
+      inputs?: number;
+      relations?: number;
+      visuals?: number;
+    };
+  };
+  const page = details.page
+    ? `页面 JSON：${details.page.schemaVersion || "unknown"}，regions ${details.page.regions ?? 0}，blocks ${details.page.blocks ?? 0}，targets ${details.page.targets ?? 0}，inputs ${details.page.inputs ?? 0}，relations ${details.page.relations ?? 0}，visuals ${details.page.visuals ?? 0}`
+    : "";
+  const attempts = Array.isArray(details.attempts)
+    ? details.attempts
+        .map((attempt, index) => {
+          const size = attempt.requestBytes
+            ? `${Math.round(attempt.requestBytes / 1024)}KB`
+            : "?KB";
+          const elapsed = attempt.elapsedMs ? `${attempt.elapsedMs}ms` : "?ms";
+          const timeout = attempt.timeoutMs ? `${attempt.timeoutMs}ms` : "?ms";
+          const observation = describeObservationSummary(attempt.observation);
+          return [
+            `${index + 1}. ${attempt.stage || "plan"} / ${attempt.model || "model"} / ${attempt.budget || "budget"}，请求 ${size}，耗时 ${elapsed}/${timeout}，错误：${attempt.error || "unknown"}`,
+            observation ? `observe ${observation}` : "",
+          ]
+            .filter(Boolean)
+            .join("；");
+        })
+        .join("\n")
+    : "";
+
+  return [message, page, attempts ? `DeepSeek 尝试：\n${attempts}` : ""]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function newMessage(role: ChatMessage["role"], text: string): ChatMessage {
@@ -133,16 +409,132 @@ function newMessage(role: ChatMessage["role"], text: string): ChatMessage {
   };
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function compactReplies(replies: string[]) {
+  const compacted = replies
+    .map((reply) => reply.trim())
+    .filter(Boolean)
+    .filter((reply, index, all) => index === 0 || reply !== all[index - 1]);
+
+  return compacted.join("\n") || "已处理。";
+}
+
+function errorMessage(cause: unknown, fallback: string) {
+  return cause instanceof Error ? cause.message : String(cause || fallback);
+}
+
+function describeObservationSummary(observation?: AgentObservationSummary) {
+  if (!observation) {
+    return "";
+  }
+
+  const selected = [
+    observation.kind ? `kind ${observation.kind}` : "",
+    `mode ${observation.mode || "general"}`,
+    `blocks ${observation.blocks ?? 0}/${observation.totalBlocks ?? 0}`,
+    `targets ${observation.targets ?? 0}/${observation.totalTargets ?? 0}`,
+    `inputs ${observation.inputs ?? 0}/${observation.totalInputs ?? 0}`,
+    observation.diff
+      ? `diff +${observation.diff.targetsAdded ?? 0}/~${observation.diff.targetsUpdated ?? 0}/-${observation.diff.targetsDisappeared ?? 0}, inputs +${observation.diff.newEditableInputs ?? 0}`
+      : "",
+    observation.diff?.candidateActions
+      ? `candidates ${observation.diff.candidateActions}`
+      : "",
+  ];
+  return selected.filter(Boolean).join(", ");
+}
+
+function summarizeSnapshot(state: BrowserAgentSnapshot) {
+  const title = state.title || "未命名页面";
+  const url = shortUrl(state.url);
+  const contentCount = state.blocks?.length || state.content?.length || 0;
+  const targetCount = state.targets.length;
+  const regionCount = state.regions?.length || 0;
+  const inputCount = state.inputs?.length || 0;
+  return `${title}\n${url}\n区域 ${regionCount} 个，内容块 ${contentCount} 条，可操作目标 ${targetCount} 个，输入目标 ${inputCount} 个。`;
+}
+
+function summarizeObservation(observation: BrowserObservationEnvelope) {
+  const state = observation.snapshot;
+  const base = summarizeSnapshot(state);
+  if (observation.kind !== "patch" || !observation.patch?.summary) {
+    return `full snapshot\n${base}`;
+  }
+
+  const summary = observation.patch.summary;
+  const active = observation.patch.activeElement?.changed
+    ? `active ${observation.patch.activeElement.previousTargetId || "-"} -> ${observation.patch.activeElement.currentTargetId || "-"}`
+    : "active unchanged";
+  return [
+    "incremental patch",
+    base,
+    `${active}; inputs +${summary.newEditableInputs ?? 0}/~${summary.updatedEditableInputs ?? 0}; buttons ${summary.actionButtons ?? 0}; targets +${summary.targetsAdded ?? 0}/~${summary.targetsUpdated ?? 0}/-${summary.targetsDisappeared ?? 0}; regions ~${summary.regionsChanged ?? 0}`,
+  ].join("\n");
+}
+
+function describeAction(action?: BrowserAgentAction) {
+  if (!action || action.type === "none") {
+    return "动作：不操作，继续观察或等待用户补充。";
+  }
+
+  if (action.type === "navigate") {
+    return `动作：打开页面 ${action.url || ""}`;
+  }
+
+  if (action.type === "click") {
+    return `动作：点击目标 ${action.targetId || ""}`;
+  }
+
+  if (action.type === "type") {
+    const submit = action.submit ? "，并提交" : "";
+    return `动作：向 ${action.targetId || ""} 输入“${action.text || ""}”${submit}`;
+  }
+
+  return `动作：${action.type}`;
+}
+
+function describePlanDebug(debug?: BrowserAgentPlan["debug"]) {
+  if (!debug) {
+    return "";
+  }
+
+  const observation = describeObservationSummary(debug.observation);
+  const parts = [
+    observation ? `observe ${observation}` : "",
+    debug.stage ? `阶段 ${debug.stage}` : "",
+    debug.model ? `模型 ${debug.model}` : "",
+    debug.budget ? `上下文 ${debug.budget}` : "",
+    Number(debug.retries) > 0 ? `重试 ${debug.retries} 次` : "",
+    debug.previousError ? `上一错误 ${debug.previousError}` : "",
+  ].filter(Boolean);
+
+  return parts.length ? `\n诊断：${parts.join("，")}` : "";
+}
+
+function shortUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`;
+  } catch {
+    return value || "about:blank";
+  }
+}
+
 export function App() {
   const tauriClient = isTauri();
   const [settings, setSettings] = useState<SettingsState | null>(null);
   const [address, setAddress] = useState(tauriClient ? desktopStartUrl : "");
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState(initialMessages);
+  const [agentTrace, setAgentTrace] = useState<AgentTraceItem[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(tauriClient);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [error, setError] = useState("");
+  const [agentDriver, setAgentDriver] = useState<AgentDriver>("playwright");
   const [nativeBrowserReady, setNativeBrowserReady] = useState(false);
   const [nativeBrowserError, setNativeBrowserError] = useState("");
   const browserDock = useRef<HTMLDivElement | null>(null);
@@ -295,6 +687,7 @@ export function App() {
 
     setPrompt("");
     setError("");
+    setAgentTrace([]);
     setBusy(true);
     setMessages((current) => [...current, newMessage("user", text)]);
 
@@ -305,38 +698,9 @@ export function App() {
           throw new Error("浏览器 WebView 还没有准备好。");
         }
 
-        const state = await invoke<BrowserAgentSnapshot>("browser_agent_snapshot", {
-          label,
-        });
-        const plan = await api<BrowserAgentPlan>("/api/agent/plan", {
-          method: "POST",
-          body: JSON.stringify({
-            message: text,
-            state,
-          }),
-        });
-
-        let assistantText = plan.message || "收到。";
-        if (plan.action?.type && plan.action.type !== "none") {
-          const result = await invoke<BrowserAgentResult>("browser_agent_execute", {
-            label,
-            action: plan.action,
-          });
-
-          if (result.url) {
-            setAddress(result.url);
-          }
-
-          if (result.reply) {
-            assistantText = `${assistantText}\n${result.reply}`;
-          }
-        }
-
-        setMessages((current) => [
-          ...current,
-          newMessage("assistant", assistantText),
-        ]);
+        await runAgentLoop(label, text);
         return;
+
       }
 
       const result = await api<{ message: string }>("/api/chat", {
@@ -358,6 +722,184 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function runAgentLoop(label: string, text: string) {
+    const history: AgentStepHistory[] = [];
+    const replies: string[] = [];
+
+    for (let step = 1; step <= maxAgentSteps; step += 1) {
+      const observation = await invoke<BrowserObservationEnvelope>("browser_agent_observe", {
+        label,
+        forceFull: step === 1,
+      });
+      const state = observation.snapshot;
+      appendTrace({
+        step,
+        phase: "observe",
+        title: observation.kind === "patch" ? "增量观察" : "观察页面",
+        detail: summarizeObservation(observation),
+      });
+      appendTrace({
+        step,
+        phase: "plan",
+        title: "请求规划",
+        detail: "正在生成任务状态和页面观察结果，再交给 DeepSeek 规划下一步。",
+      });
+      let plan: BrowserAgentPlan;
+      try {
+        plan = await api<BrowserAgentPlan>("/api/agent/plan", {
+          method: "POST",
+          body: JSON.stringify({
+            message: text,
+            progress: {
+              step,
+              maxSteps: maxAgentSteps,
+              history,
+            },
+            state,
+            observation: {
+              kind: observation.kind,
+              sequence: observation.sequence,
+              patch: observation.patch || null,
+            },
+          }),
+        });
+      } catch (cause) {
+        appendTrace({
+          step,
+          phase: "error",
+          title: "规划失败",
+          detail: errorMessage(cause, "规划失败"),
+        });
+        throw cause;
+      }
+      appendTrace({
+        step,
+        phase: "plan",
+        title: "规划下一步",
+        detail: `${plan.message || "模型没有补充说明"}\n${describeAction(plan.action)}${describePlanDebug(plan.debug)}`,
+      });
+
+      if (plan.message) {
+        replies.push(plan.message);
+      }
+
+      if (!plan.action?.type || plan.action.type === "none") {
+        appendTrace({
+          step,
+          phase: "result",
+          title: "任务暂停",
+          detail: "模型判断当前不需要继续执行浏览器动作。",
+        });
+        break;
+      }
+
+      appendTrace({
+        step,
+        phase: "action",
+        title: "执行动作",
+        detail: describeAction(plan.action),
+      });
+
+      let result: BrowserAgentResult;
+      try {
+        result = await executePlannedAction(label, plan.action, state);
+      } catch (cause) {
+        const message =
+          cause instanceof Error ? cause.message : String(cause || "执行失败");
+        appendTrace({
+          step,
+          phase: "error",
+          title: "执行失败",
+          detail: message,
+        });
+        throw cause;
+      }
+
+      if (result.url) {
+        setAddress(result.url);
+      }
+
+      if (result.reply) {
+        replies.push(result.reply);
+      }
+      appendTrace({
+        step,
+        phase: "result",
+        title: "执行结果",
+        detail: result.reply || "动作执行完成。",
+      });
+
+      history.push({
+        action: plan.action.type,
+        reply: result.reply || plan.message || "",
+        target: result.target?.label || plan.action.targetId || plan.action.url || "",
+        targetId: plan.action.targetId || result.target?.id || "",
+        text: plan.action.type === "type" ? plan.action.text || "" : "",
+        submitted: plan.action.type === "type" && Boolean(plan.action.submit),
+        url: result.url || state.url,
+      });
+
+      await sleep(postActionObservationDelay(plan.action, text));
+
+      if (step === maxAgentSteps) {
+        replies.push("已到最大步骤，先停下。");
+      }
+    }
+
+    setMessages((current) => [
+      ...current,
+      newMessage("assistant", compactReplies(replies)),
+    ]);
+  }
+
+  function appendTrace(item: Omit<AgentTraceItem, "id">) {
+    setAgentTrace((current) => [
+      ...current,
+      {
+        ...item,
+        id: `${item.phase}-${item.step}-${crypto.randomUUID()}`,
+      },
+    ]);
+  }
+
+  function postActionObservationDelay(action: BrowserAgentAction, request: string) {
+    if (action.type === "navigate") {
+      return 900;
+    }
+
+    if (
+      action.type === "click" &&
+      /comment|reply|type|input|send|post|publish|评论|回复|输入|发送|发表|发布|留言/i.test(request)
+    ) {
+      return 900;
+    }
+
+    if (action.type === "type") {
+      return 900;
+    }
+
+    return 450;
+  }
+
+  async function executePlannedAction(
+    label: string,
+    action: BrowserAgentAction,
+    state: BrowserAgentSnapshot,
+  ) {
+    return agentDriver === "playwright"
+      ? api<BrowserAgentResult>("/api/webview-cdp/execute", {
+          method: "POST",
+          body: JSON.stringify({
+            action,
+            state,
+          }),
+        })
+      : invoke<BrowserAgentResult>("browser_agent_execute", {
+          label,
+          action,
+        });
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -572,6 +1114,26 @@ export function App() {
           />
         )}
 
+        {agentTrace.length > 0 && (
+          <section className="agent-trace" aria-label="Agent 任务轨迹">
+            <header>
+              <strong>任务轨迹</strong>
+              <span>{agentTrace.length}</span>
+            </header>
+            <ol>
+              {agentTrace.map((item) => (
+                <li className={`is-${item.phase}`} key={item.id}>
+                  <b>{item.step}</b>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.detail}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+
         <section className="messages">
           {messages.map((message) => (
             <article className={`message ${message.role}`} key={message.id}>
@@ -600,6 +1162,24 @@ export function App() {
             <KeyRound />
             DeepSeek
           </span>
+          <div className="driver-switch" aria-label="Agent 操作模式">
+            <button
+              className={agentDriver === "playwright" ? "is-active" : ""}
+              disabled={busy}
+              onClick={() => setAgentDriver("playwright")}
+              type="button"
+            >
+              Playwright
+            </button>
+            <button
+              className={agentDriver === "native" ? "is-active" : ""}
+              disabled={busy}
+              onClick={() => setAgentDriver("native")}
+              type="button"
+            >
+              真鼠标
+            </button>
+          </div>
           {error && <strong>{error}</strong>}
         </footer>
       </aside>
@@ -638,7 +1218,9 @@ function SettingsDialog({
   onSave,
 }: SettingsDialogProps) {
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState(saved.model);
+  const [model, setModel] = useState(
+    agentModelOptions.includes(saved.model) ? saved.model : defaultAgentModel,
+  );
 
   return (
     <form
@@ -676,10 +1258,11 @@ function SettingsDialog({
       <label>
         <span>模型</span>
         <select onChange={(event) => setModel(event.target.value)} value={model}>
-          <option value="deepseek-v4-flash">deepseek-v4-flash</option>
-          <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-          <option value="deepseek-chat">deepseek-chat</option>
-          <option value="deepseek-reasoner">deepseek-reasoner</option>
+          {agentModelOptions.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
         </select>
       </label>
 

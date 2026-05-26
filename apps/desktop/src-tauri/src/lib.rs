@@ -7,6 +7,7 @@ use tauri::{
 };
 
 const BROWSER_PILOT_WEBVIEW_SCRIPT: &str = include_str!("browser_pilot_webview.js");
+const WEBVIEW_CDP_PORT: &str = "9333";
 
 #[derive(Clone, Serialize)]
 struct BrowserWebviewError {
@@ -35,14 +36,64 @@ struct BrowserTargetRisk {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct BrowserTargetInteraction {
+  #[serde(default)]
+  clickable: bool,
+  #[serde(default)]
+  editable: bool,
+  #[serde(default)]
+  selectable: bool,
+  #[serde(default)]
+  scrollable: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserTargetSemantics {
+  #[serde(default)]
+  kind: String,
+  #[serde(default)]
+  role: String,
+  #[serde(default, rename = "intentHints")]
+  intent_hints: Vec<String>,
+  #[serde(default)]
+  confidence: f64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct BrowserAgentTarget {
   id: String,
+  #[serde(default)]
+  selector: String,
   label: String,
   tag: String,
   #[serde(rename = "type")]
   target_type: String,
   #[serde(default)]
+  text: String,
+  #[serde(default, rename = "ariaLabel")]
+  aria_label: String,
+  #[serde(default)]
+  title: String,
+  #[serde(default)]
+  alt: String,
+  #[serde(default)]
+  placeholder: String,
+  #[serde(default)]
+  href: String,
+  #[serde(default)]
+  value: String,
+  #[serde(default)]
   context: String,
+  #[serde(default)]
+  visibility: String,
+  #[serde(default)]
+  interaction: Option<BrowserTargetInteraction>,
+  #[serde(default)]
+  semantics: Option<BrowserTargetSemantics>,
+  #[serde(default, rename = "regionId")]
+  region_id: String,
+  #[serde(default, rename = "blockId")]
+  block_id: String,
   #[serde(default)]
   risk: Option<BrowserTargetRisk>,
   #[serde(rename = "box")]
@@ -52,12 +103,118 @@ struct BrowserAgentTarget {
 #[derive(Clone, Serialize, Deserialize)]
 struct BrowserContentItem {
   id: String,
+  #[serde(default)]
+  kind: String,
   role: String,
   text: String,
   #[serde(default, rename = "targetIds")]
   target_ids: Vec<String>,
+  #[serde(default, rename = "regionId")]
+  region_id: String,
   #[serde(rename = "box")]
   content_box: BrowserTargetBox,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserVisualItem {
+  id: String,
+  kind: String,
+  #[serde(default)]
+  alt: String,
+  #[serde(default)]
+  title: String,
+  #[serde(default, rename = "ariaLabel")]
+  aria_label: String,
+  #[serde(default, rename = "nearbyText")]
+  nearby_text: String,
+  #[serde(default, rename = "targetIds")]
+  target_ids: Vec<String>,
+  #[serde(default, rename = "regionId")]
+  region_id: String,
+  #[serde(rename = "box")]
+  visual_box: BrowserTargetBox,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserRegionItem {
+  id: String,
+  role: String,
+  label: String,
+  #[serde(default)]
+  text: String,
+  #[serde(rename = "box")]
+  region_box: BrowserTargetBox,
+  #[serde(default, rename = "targetIds")]
+  target_ids: Vec<String>,
+  #[serde(default, rename = "blockIds")]
+  block_ids: Vec<String>,
+  #[serde(default, rename = "inputIds")]
+  input_ids: Vec<String>,
+  #[serde(default, rename = "visualIds")]
+  visual_ids: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserInputItem {
+  id: String,
+  #[serde(rename = "targetId")]
+  target_id: String,
+  #[serde(default)]
+  name: String,
+  #[serde(default, rename = "inputType")]
+  input_type: String,
+  #[serde(default)]
+  placeholder: String,
+  #[serde(default)]
+  value: String,
+  #[serde(default)]
+  context: String,
+  #[serde(default)]
+  active: bool,
+  #[serde(default)]
+  multiline: bool,
+  #[serde(default, rename = "box")]
+  input_box: Option<BrowserTargetBox>,
+  #[serde(default, rename = "regionId")]
+  region_id: String,
+  #[serde(default, rename = "blockId")]
+  block_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserRelationItem {
+  #[serde(rename = "type")]
+  relation_type: String,
+  from: String,
+  to: String,
+  #[serde(default)]
+  confidence: f64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserScrollState {
+  #[serde(default)]
+  x: i32,
+  #[serde(default)]
+  y: i32,
+  #[serde(default, rename = "maxX")]
+  max_x: i32,
+  #[serde(default, rename = "maxY")]
+  max_y: i32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BrowserPageState {
+  #[serde(default, rename = "readyState")]
+  ready_state: String,
+  #[serde(default, rename = "activeTargetId")]
+  active_target_id: String,
+  #[serde(default, rename = "hasModal")]
+  has_modal: bool,
+  #[serde(default, rename = "hasOverlay")]
+  has_overlay: bool,
+  #[serde(default)]
+  scroll: Option<BrowserScrollState>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -68,12 +225,26 @@ struct BrowserViewport {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct BrowserAgentSnapshot {
+  #[serde(default, rename = "schemaVersion")]
+  schema_version: String,
   title: String,
   url: String,
   viewport: BrowserViewport,
+  #[serde(default)]
+  state: Option<BrowserPageState>,
+  #[serde(default)]
+  regions: Vec<BrowserRegionItem>,
+  #[serde(default)]
+  blocks: Vec<BrowserContentItem>,
   targets: Vec<BrowserAgentTarget>,
   #[serde(default)]
   content: Vec<BrowserContentItem>,
+  #[serde(default)]
+  inputs: Vec<BrowserInputItem>,
+  #[serde(default)]
+  relations: Vec<BrowserRelationItem>,
+  #[serde(default)]
+  visuals: Vec<BrowserVisualItem>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -165,6 +336,23 @@ async fn browser_agent_snapshot(
   let webview = get_webview(&window, &label)?;
   let value = eval_browser_script(&webview, "snapshot", serde_json::json!({})).await?;
   serde_json::from_value(value).map_err(|error| format!("invalid snapshot: {error}"))
+}
+
+#[tauri::command]
+async fn browser_agent_observe(
+  window: Window,
+  label: String,
+  force_full: Option<bool>,
+) -> Result<serde_json::Value, String> {
+  let webview = get_webview(&window, &label)?;
+  eval_browser_script(
+    &webview,
+    "observeActionableDiff",
+    serde_json::json!({
+      "forceFull": force_full.unwrap_or(false),
+    }),
+  )
+  .await
 }
 
 #[tauri::command]
@@ -455,6 +643,8 @@ fn native_left_click(_x: i32, _y: i32) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  configure_webview2_cdp();
+
   tauri::Builder::default()
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -468,6 +658,7 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       browser_create_webview,
+      browser_agent_observe,
       browser_agent_snapshot,
       browser_agent_execute,
       browser_set_webview_bounds,
@@ -477,3 +668,24 @@ pub fn run() {
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
+
+#[cfg(target_os = "windows")]
+fn configure_webview2_cdp() {
+  let port_arg = format!("--remote-debugging-port={WEBVIEW_CDP_PORT}");
+  let current = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+
+  if current.contains("--remote-debugging-port=") {
+    return;
+  }
+
+  let next = if current.trim().is_empty() {
+    port_arg
+  } else {
+    format!("{} {}", current.trim(), port_arg)
+  };
+
+  std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", next);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_webview2_cdp() {}

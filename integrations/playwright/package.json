@@ -5,7 +5,7 @@
   "type": "module",
   "exports": "./src/index.mjs",
   "scripts": {
-    "check": "node --check src/index.mjs"
+    "check": "node --check src/index.mjs && node --check src/webview-cdp.mjs"
   },
   "dependencies": {
     "playwright": "^1.60.0"
