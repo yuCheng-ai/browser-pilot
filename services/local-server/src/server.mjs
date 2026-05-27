@@ -7,9 +7,12 @@ import {
   RiskBlockedError,
 } from "../../../integrations/playwright/src/index.mjs";
 import {
-  executeWebViewCdpAction,
   webViewCdpStatus,
 } from "../../../integrations/playwright/src/webview-cdp.mjs";
+import {
+  executeSessionBrowserAction,
+  executeWebViewBrowserAction,
+} from "./browser-tools.mjs";
 import {
   buildAgentObservations,
   planBrowserAction,
@@ -93,7 +96,7 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/api/webview-cdp/execute") {
       const payload = await readJson(request);
-      sendJson(response, 200, await executeWebViewCdpAction(payload));
+      sendJson(response, 200, await executeWebViewBrowserAction(payload));
       return;
     }
 
@@ -207,38 +210,12 @@ async function runChatTurn(message) {
     vision: buildVisionContext({ message: normalizedMessage, state }),
   });
 
-  if (plan.action.type === "navigate") {
-    return {
-      message: plan.reply,
-      state: await session.navigate(plan.action.url),
-    };
-  }
-
-  if (plan.action.type === "click") {
-    const result = await session.clickTarget(plan.action.targetId);
-    return {
-      message: plan.reply,
-      state: result.state,
-    };
-  }
-
-  if (plan.action.type === "type") {
-    const result = await session.typeIntoTarget(
-      plan.action.targetId,
-      plan.action.text,
-      {
-        submit: plan.action.submit,
-      },
-    );
-    return {
-      message: plan.reply,
-      state: result.state,
-    };
-  }
+  const result = await executeSessionBrowserAction(session, plan.action);
 
   return {
     message: plan.reply,
-    state,
+    result,
+    state: result.state || state,
   };
 }
 

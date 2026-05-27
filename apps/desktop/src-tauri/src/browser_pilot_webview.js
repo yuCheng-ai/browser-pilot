@@ -1378,6 +1378,15 @@
     ].join("|");
   }
 
+  function scrollDigest(scroll) {
+    return [
+      Math.round(Number(scroll?.x) || 0),
+      Math.round(Number(scroll?.y) || 0),
+      Math.round(Number(scroll?.maxX) || 0),
+      Math.round(Number(scroll?.maxY) || 0),
+    ].join(",");
+  }
+
   function compactTarget(target) {
     return {
       id: target.id,
@@ -1535,6 +1544,10 @@
     const previousActiveTargetId = previous.state?.activeTargetId || "";
     const pageState = inspectPageState();
     const activeChanged = previousActiveTargetId !== pageState.activeTargetId;
+    const scrollChanged = scrollDigest(previous.state?.scroll) !== scrollDigest(pageState.scroll);
+    if (scrollChanged) {
+      roots.unshift(document.body);
+    }
     if (activeChanged && document.activeElement instanceof Element) {
       roots.unshift(document.activeElement);
     }
@@ -1621,6 +1634,7 @@
       summary: {
         dirtyRoots: roots.length,
         activeChanged,
+        scrollChanged,
         newEditableInputs: addedInputs.length,
         updatedEditableInputs: updatedInputs.length,
         actionButtons: actionButtons.length,
@@ -1802,6 +1816,52 @@
     return false;
   }
 
+  function nearestScrollableAncestor(element) {
+    let current = element?.parentElement || null;
+    while (current && current !== document.body && current !== document.documentElement) {
+      if (isScrollableElement(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function scrollPage({ targetId, direction, amount }) {
+    const element = targetId ? findTarget(targetId) : null;
+    if (targetId && !element) {
+      return {
+        ok: false,
+        error: `DOM target expired: ${targetId}`,
+      };
+    }
+
+    const delta = direction === "up" ? -Math.abs(Number(amount) || 650) : Math.abs(Number(amount) || 650);
+    const container =
+      (element && isScrollableElement(element) ? element : null) ||
+      nearestScrollableAncestor(element) ||
+      document.scrollingElement ||
+      document.documentElement;
+
+    if (element && container === document.scrollingElement) {
+      element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    }
+
+    if (container === document.scrollingElement || container === document.documentElement || container === document.body) {
+      window.scrollBy({ top: delta, left: 0, behavior: "instant" });
+    } else {
+      container.scrollBy({ top: delta, left: 0, behavior: "instant" });
+      observerState.dirtyRoots.add(container);
+    }
+
+    observerState.dirtyRoots.add(document.body);
+
+    return {
+      ok: true,
+      target: element ? serializeTarget(element, targetId) : null,
+    };
+  }
+
   function typeTarget({ targetId, text, submit }) {
     const element = findTarget(targetId);
     if (!element) {
@@ -1835,6 +1895,7 @@
       snapshot,
       observeActionableDiff,
       locateTarget,
+      scrollPage,
       typeTarget,
     },
   });

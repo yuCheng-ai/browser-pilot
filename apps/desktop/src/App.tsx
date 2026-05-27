@@ -1,14 +1,19 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowRight,
   Bot,
+  ChevronLeft,
+  ChevronRight,
   Globe2,
-  KeyRound,
+  Info,
+  LockKeyhole,
   LoaderCircle,
+  MoreVertical,
   RefreshCw,
   SendHorizontal,
   Settings2,
+  Sparkles,
+  Star,
   X,
 } from "lucide-react";
 import {
@@ -43,11 +48,13 @@ type NativeBounds = {
 };
 
 type BrowserAgentAction = {
-  type: "navigate" | "click" | "type" | "none";
+  type: "navigate" | "click" | "type" | "scroll" | "none";
   targetId?: string;
   url?: string;
   text?: string;
   submit?: boolean;
+  direction?: "up" | "down";
+  amount?: number;
 };
 
 type AgentObservationSummary = {
@@ -66,10 +73,14 @@ type AgentObservationSummary = {
   totalBlocks?: number;
   totalTargets?: number;
   totalInputs?: number;
+  focusedIntent?: string;
+  focusedCandidates?: number;
+  recommendedActions?: number;
 };
 
 type AgentDiffSummary = {
   activeChanged?: boolean;
+  scrollChanged?: boolean;
   newEditableInputs?: number;
   updatedEditableInputs?: number;
   actionButtons?: number;
@@ -90,6 +101,13 @@ type BrowserAgentPlan = {
     retries?: number;
     previousError?: string;
     observation?: AgentObservationSummary;
+    decision?: {
+      evaluationPreviousGoal?: string;
+      memory?: string;
+      nextGoal?: string;
+      done?: boolean;
+      action?: BrowserAgentAction;
+    };
   } | null;
 };
 
@@ -297,6 +315,7 @@ type AgentDriver = "playwright" | "native";
 
 type AgentStepHistory = {
   action: string;
+  goal?: string;
   reply: string;
   target: string;
   targetId?: string;
@@ -443,6 +462,12 @@ function describeObservationSummary(observation?: AgentObservationSummary) {
     observation.diff?.candidateActions
       ? `candidates ${observation.diff.candidateActions}`
       : "",
+    observation.focusedIntent
+      ? `focused ${observation.focusedIntent} ${observation.focusedCandidates ?? 0}`
+      : "",
+    observation.recommendedActions
+      ? `recommended ${observation.recommendedActions}`
+      : "",
   ];
   return selected.filter(Boolean).join(", ");
 }
@@ -471,7 +496,7 @@ function summarizeObservation(observation: BrowserObservationEnvelope) {
   return [
     "incremental patch",
     base,
-    `${active}; inputs +${summary.newEditableInputs ?? 0}/~${summary.updatedEditableInputs ?? 0}; buttons ${summary.actionButtons ?? 0}; targets +${summary.targetsAdded ?? 0}/~${summary.targetsUpdated ?? 0}/-${summary.targetsDisappeared ?? 0}; regions ~${summary.regionsChanged ?? 0}`,
+    `${active}; scroll ${summary.scrollChanged ? "changed" : "same"}; inputs +${summary.newEditableInputs ?? 0}/~${summary.updatedEditableInputs ?? 0}; buttons ${summary.actionButtons ?? 0}; targets +${summary.targetsAdded ?? 0}/~${summary.targetsUpdated ?? 0}/-${summary.targetsDisappeared ?? 0}; regions ~${summary.regionsChanged ?? 0}`,
   ].join("\n");
 }
 
@@ -493,6 +518,10 @@ function describeAction(action?: BrowserAgentAction) {
     return `动作：向 ${action.targetId || ""} 输入“${action.text || ""}”${submit}`;
   }
 
+  if (action.type === "scroll") {
+    return `动作：向${action.direction === "up" ? "上" : "下"}滚动${action.targetId ? ` ${action.targetId}` : ""}`;
+  }
+
   return `动作：${action.type}`;
 }
 
@@ -507,6 +536,10 @@ function describePlanDebug(debug?: BrowserAgentPlan["debug"]) {
     debug.stage ? `阶段 ${debug.stage}` : "",
     debug.model ? `模型 ${debug.model}` : "",
     debug.budget ? `上下文 ${debug.budget}` : "",
+    debug.decision?.evaluationPreviousGoal
+      ? `上步评估 ${debug.decision.evaluationPreviousGoal}`
+      : "",
+    debug.decision?.nextGoal ? `下一目标 ${debug.decision.nextGoal}` : "",
     Number(debug.retries) > 0 ? `重试 ${debug.retries} 次` : "",
     debug.previousError ? `上一错误 ${debug.previousError}` : "",
   ].filter(Boolean);
@@ -833,6 +866,7 @@ export function App() {
 
       history.push({
         action: plan.action.type,
+        goal: plan.debug?.decision?.nextGoal || plan.message || "",
         reply: result.reply || plan.message || "",
         target: result.target?.label || plan.action.targetId || plan.action.url || "",
         targetId: plan.action.targetId || result.target?.id || "",
@@ -878,6 +912,10 @@ export function App() {
 
     if (action.type === "type") {
       return 900;
+    }
+
+    if (action.type === "scroll") {
+      return 650;
     }
 
     return 450;
@@ -1017,7 +1055,25 @@ export function App() {
             <strong>BrowserPilot</strong>
           </div>
 
+          <div className="nav-controls" aria-label="浏览器导航">
+            <button aria-label="后退" disabled={busy} type="button">
+              <ChevronLeft />
+            </button>
+            <button aria-label="前进" disabled={busy} type="button">
+              <ChevronRight />
+            </button>
+            <button
+              aria-label="刷新"
+              disabled={busy}
+              onClick={() => void refresh()}
+              type="button"
+            >
+              <RefreshCw />
+            </button>
+          </div>
+
           <form className="address-bar" onSubmit={navigate}>
+            <LockKeyhole className="address-lock" />
             <input
               aria-label="地址"
               onChange={(event) => setAddress(event.target.value)}
@@ -1025,18 +1081,17 @@ export function App() {
               value={address}
             />
             <button aria-label="打开" disabled={busy} type="submit">
-              <ArrowRight />
+              <Star />
             </button>
           </form>
 
           <button
-            aria-label="刷新"
+            aria-label="更多"
             className="icon-button"
             disabled={busy}
-            onClick={() => void refresh()}
             type="button"
           >
-            <RefreshCw />
+            <MoreVertical />
           </button>
         </header>
 
@@ -1063,21 +1118,27 @@ export function App() {
         </div>
 
         <footer className="browser-status">
-          <span>{tauriClient ? "Tauri WebView" : "Desktop client required"}</span>
-          <em className={tauriClient ? "is-live" : ""}>
-            {tauriClient ? "客户端" : "Web 调试页"}
-          </em>
-          <code title={address}>
-            {tauriClient ? address : "npm run desktop:tauri -- dev"}
-          </code>
+          <span className={nativeBrowserReady || !tauriClient ? "is-live" : ""} />
+          <strong>
+            {nativeBrowserReady
+              ? "页面已加载"
+              : tauriClient
+                ? "正在准备页面"
+                : "需要桌面客户端"}
+          </strong>
         </footer>
       </section>
 
       <aside className="chat-pane">
         <header className="chat-header">
-          <div>
-            <p>浏览器领航员</p>
-            <strong>任务对话</strong>
+          <div className="chat-title">
+            <span className="app-icon">
+              <Globe2 />
+            </span>
+            <div>
+              <strong>BrowserPilot</strong>
+              <p>你的 AI 浏览助手，帮你理解并操作网页。</p>
+            </div>
           </div>
           <button
             aria-label="设置"
@@ -1091,8 +1152,11 @@ export function App() {
 
         {settingsOpen && settings && (
           <SettingsDialog
+            agentDriver={agentDriver}
+            agentTrace={agentTrace}
             busy={settingsBusy}
             saved={settings}
+            onAgentDriverChange={setAgentDriver}
             onClose={() => setSettingsOpen(false)}
             onSave={async (payload) => {
               setSettingsBusy(true);
@@ -1114,26 +1178,6 @@ export function App() {
           />
         )}
 
-        {agentTrace.length > 0 && (
-          <section className="agent-trace" aria-label="Agent 任务轨迹">
-            <header>
-              <strong>任务轨迹</strong>
-              <span>{agentTrace.length}</span>
-            </header>
-            <ol>
-              {agentTrace.map((item) => (
-                <li className={`is-${item.phase}`} key={item.id}>
-                  <b>{item.step}</b>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <p>{item.detail}</p>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          </section>
-        )}
-
         <section className="messages">
           {messages.map((message) => (
             <article className={`message ${message.role}`} key={message.id}>
@@ -1143,13 +1187,31 @@ export function App() {
           ))}
         </section>
 
+        <div className="quick-actions" aria-label="快捷任务">
+          <button
+            disabled={busy}
+            onClick={() => setPrompt("提取本文的所有链接")}
+            type="button"
+          >
+            提取本文的所有链接
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => setPrompt("对比本页与竞品页的差异")}
+            type="button"
+          >
+            对比本页与竞品页的差异
+          </button>
+        </div>
+
         <form className="composer" onSubmit={sendMessage}>
+          <Sparkles />
           <textarea
             aria-label="任务"
             onChange={(event) => setPrompt(event.target.value)}
             onKeyDown={handleComposerKeyDown}
-            placeholder="例如：搜索 BrowserPilot，点击 新闻，打开 example.com"
-            rows={3}
+            placeholder="询问 BrowserPilot 或输入指令..."
+            rows={1}
             value={prompt}
           />
           <button aria-label="发送" disabled={busy} type="submit">
@@ -1159,27 +1221,9 @@ export function App() {
 
         <footer className="chat-status">
           <span className={settings?.hasDeepSeekKey ? "is-ready" : ""}>
-            <KeyRound />
-            DeepSeek
+            BrowserPilot 已就绪
           </span>
-          <div className="driver-switch" aria-label="Agent 操作模式">
-            <button
-              className={agentDriver === "playwright" ? "is-active" : ""}
-              disabled={busy}
-              onClick={() => setAgentDriver("playwright")}
-              type="button"
-            >
-              Playwright
-            </button>
-            <button
-              className={agentDriver === "native" ? "is-active" : ""}
-              disabled={busy}
-              onClick={() => setAgentDriver("native")}
-              type="button"
-            >
-              真鼠标
-            </button>
-          </div>
+          <Info />
           {error && <strong>{error}</strong>}
         </footer>
       </aside>
@@ -1201,8 +1245,11 @@ function normalizeBrowserAddress(value: string) {
 }
 
 type SettingsDialogProps = {
+  agentDriver: AgentDriver;
+  agentTrace: AgentTraceItem[];
   busy: boolean;
   saved: SettingsState;
+  onAgentDriverChange: (driver: AgentDriver) => void;
   onClose: () => void;
   onSave: (payload: {
     apiKey?: string;
@@ -1212,8 +1259,11 @@ type SettingsDialogProps = {
 };
 
 function SettingsDialog({
+  agentDriver,
+  agentTrace,
   busy,
   saved,
+  onAgentDriverChange,
   onClose,
   onSave,
 }: SettingsDialogProps) {
@@ -1244,27 +1294,71 @@ function SettingsDialog({
         </button>
       </header>
 
-      <label>
-        <span>API Key</span>
-        <input
-          autoComplete="off"
-          onChange={(event) => setApiKey(event.target.value)}
-          placeholder={saved.hasDeepSeekKey ? "已保存，输入新 Key 可覆盖" : "sk-"}
-          type="password"
-          value={apiKey}
-        />
-      </label>
+      <div className="settings-body">
+        <label>
+          <span>API Key</span>
+          <input
+            autoComplete="off"
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={saved.hasDeepSeekKey ? "已保存，输入新 Key 可覆盖" : "sk-"}
+            type="password"
+            value={apiKey}
+          />
+        </label>
 
-      <label>
-        <span>模型</span>
-        <select onChange={(event) => setModel(event.target.value)} value={model}>
-          {agentModelOptions.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
-      </label>
+        <label>
+          <span>模型</span>
+          <select onChange={(event) => setModel(event.target.value)} value={model}>
+            {agentModelOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <section className="settings-group" aria-label="Agent 操作模式">
+          <span>操作模式</span>
+          <div className="driver-switch">
+            <button
+              className={agentDriver === "playwright" ? "is-active" : ""}
+              disabled={busy}
+              onClick={() => onAgentDriverChange("playwright")}
+              type="button"
+            >
+              Playwright
+            </button>
+            <button
+              className={agentDriver === "native" ? "is-active" : ""}
+              disabled={busy}
+              onClick={() => onAgentDriverChange("native")}
+              type="button"
+            >
+              真鼠标
+            </button>
+          </div>
+        </section>
+
+        {agentTrace.length > 0 && (
+          <section className="agent-trace" aria-label="Agent 任务轨迹">
+            <header>
+              <strong>任务轨迹</strong>
+              <span>{agentTrace.length}</span>
+            </header>
+            <ol>
+              {agentTrace.map((item) => (
+                <li className={`is-${item.phase}`} key={item.id}>
+                  <b>{item.step}</b>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.detail}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+      </div>
 
       <footer>
         <button

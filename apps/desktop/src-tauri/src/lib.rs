@@ -256,6 +256,8 @@ struct BrowserAgentAction {
   url: Option<String>,
   text: Option<String>,
   submit: Option<bool>,
+  direction: Option<String>,
+  amount: Option<f64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -432,6 +434,51 @@ async fn browser_agent_execute(
         url: webview.url().ok().map(|url| url.to_string()),
         point: None,
         target: Some(target),
+      })
+    }
+    "scroll" => {
+      let direction = action.direction.unwrap_or_else(|| "down".into());
+      let amount = action.amount.unwrap_or(650.0).clamp(80.0, 1800.0);
+      let value = eval_browser_script(
+        &webview,
+        "scrollPage",
+        serde_json::json!({
+          "targetId": action.target_id,
+          "direction": direction,
+          "amount": amount,
+        }),
+      )
+      .await?;
+      if !value
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+      {
+        return Err(value
+          .get("error")
+          .and_then(serde_json::Value::as_str)
+          .unwrap_or("browser scroll failed")
+          .to_string());
+      }
+      let target = match value.get("target") {
+        Some(target_value) if !target_value.is_null() => {
+          Some(parse_action_target(target_value.clone())?)
+        }
+        _ => None,
+      };
+
+      std::thread::sleep(Duration::from_millis(500));
+
+      Ok(BrowserAgentResult {
+        reply: if direction == "up" {
+          "向上滚动。".into()
+        } else {
+          "向下滚动。".into()
+        },
+        action: "scroll".into(),
+        url: webview.url().ok().map(|url| url.to_string()),
+        point: None,
+        target,
       })
     }
     "none" => Ok(BrowserAgentResult {

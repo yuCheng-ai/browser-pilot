@@ -87,6 +87,23 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
       };
     }
 
+    if (action.type === "scroll") {
+      const point = action.targetId
+        ? (await locateTarget(cdp, action.targetId, stateTarget)).point
+        : await viewportCenter(cdp);
+      const amount = Math.max(80, Math.min(1800, Number(action.amount) || 650));
+      const deltaY = action.direction === "up" ? -amount : amount;
+      await dispatchWheel(cdp, point, deltaY);
+      await delay(500);
+      return {
+        reply: `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动。`,
+        action: "scroll",
+        url: state?.url || targetInfo.url || "",
+        point,
+        target: stateTarget || null,
+      };
+    }
+
     return {
       reply: "没有执行浏览器动作。",
       action: "none",
@@ -165,6 +182,17 @@ async function locateTarget(cdp, targetId, stateTarget) {
   return {
     box,
     point: centerPoint(box),
+  };
+}
+
+async function viewportCenter(cdp) {
+  const viewport = await evaluate(
+    cdp,
+    "(() => ({ width: window.innerWidth || 1280, height: window.innerHeight || 900 }))()",
+  );
+  return {
+    x: Math.round((Number(viewport?.width) || 1280) / 2),
+    y: Math.round((Number(viewport?.height) || 900) / 2),
   };
 }
 
@@ -352,6 +380,22 @@ async function dispatchClick(cdp, point) {
     button: "left",
     buttons: 0,
     clickCount: 1,
+  });
+}
+
+async function dispatchWheel(cdp, point, deltaY) {
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y,
+    buttons: 0,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x: point.x,
+    y: point.y,
+    deltaX: 0,
+    deltaY,
   });
 }
 

@@ -141,6 +141,36 @@ export class BrowserPilotSession {
     };
   }
 
+  async scrollPage({ amount = 650, direction = "down", targetId = "" } = {}) {
+    const page = await this.ensurePage();
+    const deltaY = direction === "up" ? -Math.abs(amount) : Math.abs(amount);
+    let point = {
+      x: viewport.width / 2,
+      y: viewport.height / 2,
+    };
+    let target = null;
+
+    if (targetId) {
+      target = await this.requireTarget(targetId);
+      const locator = page.locator(target.selector).first();
+      await locator.scrollIntoViewIfNeeded();
+      const box = await locator.boundingBox();
+      if (box) {
+        point = getClickablePoint(box);
+      }
+    }
+
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.wheel(0, deltaY);
+    await page.waitForTimeout(350);
+
+    return {
+      point,
+      target,
+      state: await this.snapshot(),
+    };
+  }
+
   async pointerInput(input) {
     const operation = this.manualInputQueue
       .catch(() => {})
