@@ -51,11 +51,34 @@ export function buildAgentObservations({
 
   return {
     source: "observePage",
+    observationSchema: "layered-observation-v1",
     kind: diff ? "patch" : "full",
     mode,
     query,
     diff,
     focused,
+    layers: {
+      fullSnapshot: {
+        available: !diff,
+        page: {
+          title: cleanText(state?.title, 120),
+          url: cleanText(state?.url, 300),
+          state: pageState,
+        },
+        regions,
+        blocks,
+        inputs,
+        targets,
+        relations,
+      },
+      actionableDiff: diff,
+      focusedTargetContext: focused,
+      visionOnDemand: {
+        available: normalizedVision.items.length > 0,
+        items: normalizedVision.items,
+        summary: normalizedVision.summary || null,
+      },
+    },
     focusedTargetId: pageState.activeTargetId,
     focusedInput: focusedInput
       ? {

@@ -10,6 +10,10 @@ export async function executeSessionBrowserAction(session, action) {
   return createSessionBrowserTools(session).execute(action);
 }
 
+export async function executeSessionBrowserActions(session, actions, options = {}) {
+  return createSessionBrowserTools(session).executeMany(actions, {}, options);
+}
+
 export function createSessionBrowserTools(session) {
   return new ToolRegistry([
     {
@@ -87,18 +91,37 @@ export function createSessionBrowserTools(session) {
 
 export async function executeWebViewBrowserAction(payload, options = {}) {
   const action = normalizeBrowserAction(payload?.action);
-  const result = await executeWebViewCdpAction(
-    {
-      ...payload,
-      action,
-    },
-    options,
-  );
+  return createWebViewBrowserTools(payload, options).execute(action);
+}
 
-  return normalizeToolResult(result, {
-    action,
-    fallbackReply: result?.reply || "动作执行完成。",
-  });
+export async function executeWebViewBrowserActions(payload, options = {}) {
+  const actions = Array.isArray(payload?.actions)
+    ? payload.actions
+    : [payload?.action];
+  return createWebViewBrowserTools(payload, options).executeMany(actions, {}, options);
+}
+
+export function createWebViewBrowserTools(payload, options = {}) {
+  return new ToolRegistry(["navigate", "click", "type", "scroll"].map((name) => ({
+    name,
+    description: `Execute ${name} in the controlled WebView through CDP.`,
+    terminatesSequence: name === "navigate",
+    timeoutMs: name === "navigate" ? 35000 : 18000,
+    execute: async (action) => {
+      const result = await executeWebViewCdpAction(
+        {
+          ...payload,
+          action,
+        },
+        options,
+      );
+
+      return normalizeToolResult(result, {
+        action,
+        fallbackReply: result?.reply || "动作执行完成。",
+      });
+    },
+  })));
 }
 
 function targetName(target, fallback) {

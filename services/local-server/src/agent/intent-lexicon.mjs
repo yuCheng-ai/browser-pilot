@@ -7,6 +7,7 @@ const intentPatterns = {
   browserAction: [/click|open|select|choose|type|input|search|submit|send|post|comment|reply|navigate/i, /\u70b9\u51fb|\u70b9\u5f00|\u6253\u5f00|\u9009\u62e9|\u8f93\u5165|\u641c\u7d22|\u63d0\u4ea4|\u53d1\u9001|\u53d1\u8868|\u53d1\u5e03|\u8bc4\u8bba|\u56de\u590d|\u7559\u8a00|\u8bbf\u95ee|\u8fdb\u5165/],
   submitControl: [/send|submit|post|publish|comment|reply|confirm|save|ok|done/i, /\u53d1\u9001|\u63d0\u4ea4|\u53d1\u8868|\u53d1\u5e03|\u8bc4\u8bba|\u56de\u590d|\u786e\u8ba4|\u4fdd\u5b58|\u5b8c\u6210/],
   contentTarget: [/article|card|note|item|content|title|visual|navigation/i, /\u5e16\u5b50|\u5185\u5bb9|\u6587\u7ae0|\u7b14\u8bb0|\u56fe\u7247|\u89c6\u9891/],
+  scroll: [/scroll|page down|move down|more content|below/i, /\u6eda\u52a8|\u4e0b\u6ed1|\u5411\u4e0b|\u5f80\u4e0b|\u4e0b\u65b9|\u66f4\u591a/],
   terminalNoAction: [/done|unsafe|risk|no target|not visible|not found/i, /\u5b8c\u6210|\u5df2\u5b8c\u6210|\u5371\u9669|\u98ce\u9669|\u65e0\u6cd5|\u4e0d\u80fd|\u6ca1\u6709|\u672a\u627e\u5230/],
 };
 
@@ -19,6 +20,7 @@ export function hasWriteIntent(message) { return matchesIntent("write", message)
 export function hasReadIntent(message) { return matchesIntent("read", message); }
 export function hasContentSelectionIntent(message) { return matchesIntent("contentSelection", message); }
 export function hasBrowserActionIntent(message) { return matchesIntent("browserAction", message); }
+export function hasScrollIntent(message) { return matchesIntent("scroll", message); }
 export function isTerminalNoActionReply(reply) { return matchesIntent("terminalNoAction", reply); }
 export function shouldUseIntentRouter({ message, progress }) {
   const step = Number(progress?.step) || 1;

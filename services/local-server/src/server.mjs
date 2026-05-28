@@ -10,7 +10,8 @@ import {
   webViewCdpStatus,
 } from "../../../integrations/playwright/src/webview-cdp.mjs";
 import {
-  executeSessionBrowserAction,
+  executeSessionBrowserActions,
+  executeWebViewBrowserActions,
   executeWebViewBrowserAction,
 } from "./browser-tools.mjs";
 import {
@@ -96,6 +97,15 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/api/webview-cdp/execute") {
       const payload = await readJson(request);
+      if (Array.isArray(payload?.actions)) {
+        sendJson(response, 200, {
+          results: await executeWebViewBrowserActions(payload, {
+            maxActions: 2,
+          }),
+        });
+        return;
+      }
+
       sendJson(response, 200, await executeWebViewBrowserAction(payload));
       return;
     }
@@ -186,6 +196,13 @@ async function planExternalBrowserTurn(payload) {
   return {
     message: plan.reply,
     action: plan.action,
+    actions: plan.actions || [plan.action],
+    evaluationPreviousGoal: plan.evaluationPreviousGoal || plan.decision?.evaluationPreviousGoal || "",
+    memory: plan.memory || plan.decision?.memory || "",
+    nextGoal: plan.nextGoal || plan.decision?.nextGoal || "",
+    done: Boolean(plan.done || plan.decision?.done),
+    success: typeof plan.success === "boolean" ? plan.success : plan.decision?.success ?? null,
+    decision: plan.decision || null,
     debug: plan.debug || null,
   };
 }
@@ -210,10 +227,15 @@ async function runChatTurn(message) {
     vision: buildVisionContext({ message: normalizedMessage, state }),
   });
 
-  const result = await executeSessionBrowserAction(session, plan.action);
+  const results = await executeSessionBrowserActions(session, plan.actions || [plan.action], {
+    maxActions: 2,
+  });
+  const result = results.at(-1) || { state };
 
   return {
     message: plan.reply,
+    actions: plan.actions || [plan.action],
+    results,
     result,
     state: result.state || state,
   };

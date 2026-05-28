@@ -94,6 +94,19 @@ type AgentDiffSummary = {
 type BrowserAgentPlan = {
   message: string;
   action: BrowserAgentAction;
+  actions?: BrowserAgentAction[];
+  evaluationPreviousGoal?: string;
+  memory?: string;
+  nextGoal?: string;
+  done?: boolean;
+  success?: boolean | null;
+  decision?: {
+    evaluationPreviousGoal?: string;
+    memory?: string;
+    nextGoal?: string;
+    done?: boolean;
+    success?: boolean | null;
+  } | null;
   debug?: {
     stage?: string;
     model?: string;
@@ -296,6 +309,8 @@ type BrowserActionablePatch = {
 };
 
 type BrowserAgentResult = {
+  ok?: boolean;
+  error?: string;
   reply: string;
   action: string;
   url?: string;
@@ -309,12 +324,15 @@ type BrowserAgentResult = {
     tag: string;
     type: string;
   };
+  state?: BrowserAgentSnapshot | null;
 };
 
 type AgentDriver = "playwright" | "native";
 
 type AgentStepHistory = {
   action: string;
+  ok?: boolean;
+  error?: string;
   goal?: string;
   reply: string;
   target: string;
@@ -340,6 +358,8 @@ const agentModelOptions = [
   "deepseek-reasoner",
 ];
 const maxAgentSteps = 8;
+const maxActionsPerStep = 2;
+const maxAgentFailures = 2;
 
 const initialMessages: ChatMessage[] = [
   {
@@ -523,6 +543,22 @@ function describeAction(action?: BrowserAgentAction) {
   }
 
   return `动作：${action.type}`;
+}
+
+function describeActions(actions?: BrowserAgentAction[]) {
+  const executable = (actions || []).filter((action) => action.type !== "none");
+  if (!executable.length) {
+    return describeAction(actions?.[0]);
+  }
+
+  return executable.map((action, index) => `${index + 1}. ${describeAction(action)}`).join("\n");
+}
+
+function planActions(plan: BrowserAgentPlan) {
+  const actions = Array.isArray(plan.actions) && plan.actions.length
+    ? plan.actions
+    : [plan.action];
+  return actions.slice(0, maxActionsPerStep);
 }
 
 function describePlanDebug(debug?: BrowserAgentPlan["debug"]) {
@@ -760,11 +796,13 @@ export function App() {
   async function runAgentLoop(label: string, text: string) {
     const history: AgentStepHistory[] = [];
     const replies: string[] = [];
+    let consecutiveFailures = 0;
+    let shouldStop = false;
 
-    for (let step = 1; step <= maxAgentSteps; step += 1) {
+    for (let step = 1; step <= maxAgentSteps && !shouldStop; step += 1) {
       const observation = await invoke<BrowserObservationEnvelope>("browser_agent_observe", {
         label,
-        forceFull: step === 1,
+        forceFull: step === 1 || consecutiveFailures > 0,
       });
       const state = observation.snapshot;
       appendTrace({
@@ -811,19 +849,22 @@ export function App() {
         step,
         phase: "plan",
         title: "规划下一步",
-        detail: `${plan.message || "模型没有补充说明"}\n${describeAction(plan.action)}${describePlanDebug(plan.debug)}`,
+        detail: `${plan.message || "模型没有补充说明"}\n${describeActions(planActions(plan))}${describePlanDebug(plan.debug)}`,
       });
 
       if (plan.message) {
         replies.push(plan.message);
       }
 
-      if (!plan.action?.type || plan.action.type === "none") {
+      const actions = planActions(plan).filter((action) => action?.type && action.type !== "none");
+      if (!actions.length || plan.done || plan.decision?.done) {
         appendTrace({
           step,
           phase: "result",
           title: "任务暂停",
-          detail: "模型判断当前不需要继续执行浏览器动作。",
+          detail: plan.done || plan.decision?.done
+            ? "模型判断任务已完成或需要停止。"
+            : "模型判断当前不需要继续执行浏览器动作。",
         });
         break;
       }
@@ -832,50 +873,78 @@ export function App() {
         step,
         phase: "action",
         title: "执行动作",
-        detail: describeAction(plan.action),
+        detail: describeActions(actions),
       });
 
-      let result: BrowserAgentResult;
-      try {
-        result = await executePlannedAction(label, plan.action, state);
-      } catch (cause) {
+      const results: BrowserAgentResult[] = await executePlannedActions(label, actions, state).catch((cause) => {
         const message =
           cause instanceof Error ? cause.message : String(cause || "执行失败");
+        return [{
+          ok: false,
+          action: actions[0]?.type || "none",
+          reply: "动作执行失败。",
+          error: message,
+        } satisfies BrowserAgentResult] as BrowserAgentResult[];
+      });
+
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index];
+        const action = actions[index] || actions[actions.length - 1];
+
+        if (result.url) {
+          setAddress(result.url);
+        }
+
+        if (result.ok === false) {
+          consecutiveFailures += 1;
+          const message = result.error || result.reply || "动作执行失败。";
+          appendTrace({
+            step,
+            phase: "error",
+            title: "执行失败",
+            detail: `${describeAction(action)}\n${message}`,
+          });
+          history.push(historyItemFromAction({
+            action,
+            ok: false,
+            error: message,
+            plan,
+            result,
+            state,
+          }));
+
+          if (consecutiveFailures >= maxAgentFailures) {
+            const finalMessage = `连续 ${consecutiveFailures} 次动作失败，任务已停止：${message}`;
+            replies.push(finalMessage);
+            shouldStop = true;
+          }
+          break;
+        }
+
+        consecutiveFailures = 0;
+        if (result.reply) {
+          replies.push(result.reply);
+        }
         appendTrace({
           step,
-          phase: "error",
-          title: "执行失败",
-          detail: message,
+          phase: "result",
+          title: "执行结果",
+          detail: result.reply || "动作执行完成。",
         });
-        throw cause;
+        history.push(historyItemFromAction({
+          action,
+          ok: true,
+          plan,
+          result,
+          state,
+        }));
+
+        await sleep(postActionObservationDelay(action, text));
+
+        if (action.type === "navigate") {
+          break;
+        }
       }
-
-      if (result.url) {
-        setAddress(result.url);
-      }
-
-      if (result.reply) {
-        replies.push(result.reply);
-      }
-      appendTrace({
-        step,
-        phase: "result",
-        title: "执行结果",
-        detail: result.reply || "动作执行完成。",
-      });
-
-      history.push({
-        action: plan.action.type,
-        goal: plan.debug?.decision?.nextGoal || plan.message || "",
-        reply: result.reply || plan.message || "",
-        target: result.target?.label || plan.action.targetId || plan.action.url || "",
-        targetId: plan.action.targetId || result.target?.id || "",
-        text: plan.action.type === "type" ? plan.action.text || "" : "",
-        submitted: plan.action.type === "type" && Boolean(plan.action.submit),
-        url: result.url || state.url,
-      });
-
-      await sleep(postActionObservationDelay(plan.action, text));
 
       if (step === maxAgentSteps) {
         replies.push("已到最大步骤，先停下。");
@@ -921,23 +990,106 @@ export function App() {
     return 450;
   }
 
-  async function executePlannedAction(
+  function historyItemFromAction({
+    action,
+    error = "",
+    ok,
+    plan,
+    result,
+    state,
+  }: {
+    action: BrowserAgentAction;
+    error?: string;
+    ok: boolean;
+    plan: BrowserAgentPlan;
+    result: BrowserAgentResult;
+    state: BrowserAgentSnapshot;
+  }): AgentStepHistory {
+    return {
+      action: action.type,
+      ok,
+      error,
+      goal: plan.nextGoal || plan.decision?.nextGoal || plan.debug?.decision?.nextGoal || plan.message || "",
+      reply: result.reply || plan.message || "",
+      target: result.target?.label || action.targetId || action.url || "",
+      targetId: action.targetId || result.target?.id || "",
+      text: action.type === "type" ? action.text || "" : "",
+      submitted: action.type === "type" && Boolean(action.submit),
+      url: result.url || state.url,
+    };
+  }
+
+  async function executePlannedActions(
     label: string,
-    action: BrowserAgentAction,
+    actions: BrowserAgentAction[],
     state: BrowserAgentSnapshot,
   ) {
-    return agentDriver === "playwright"
-      ? api<BrowserAgentResult>("/api/webview-cdp/execute", {
+    const limitedActions = actions
+      .filter(isExecutableBrowserAction)
+      .slice(0, maxActionsPerStep);
+    if (!limitedActions.length) {
+      return [{
+        ok: false,
+        action: "none",
+        reply: "动作执行失败。",
+        error: "planner returned no executable browser action",
+      } satisfies BrowserAgentResult];
+    }
+
+    if (agentDriver === "playwright") {
+      const results: BrowserAgentResult[] = [];
+      for (const action of limitedActions) {
+        const result = await api<BrowserAgentResult>("/api/webview-cdp/execute", {
           method: "POST",
           body: JSON.stringify({
             action,
             state,
           }),
-        })
-      : invoke<BrowserAgentResult>("browser_agent_execute", {
-          label,
-          action,
         });
+        results.push(result);
+
+        if (result.ok === false || action.type === "navigate") {
+          break;
+        }
+      }
+
+      return results;
+    }
+
+    const results: BrowserAgentResult[] = [];
+    for (const action of limitedActions) {
+      const result = await invoke<BrowserAgentResult>("browser_agent_execute", {
+        label,
+        action,
+      });
+      results.push(result);
+
+      if (result.ok === false || action.type === "navigate") {
+        break;
+      }
+    }
+
+    return results;
+  }
+
+  function isExecutableBrowserAction(action: BrowserAgentAction | undefined) {
+    if (!action || action.type === "none") {
+      return false;
+    }
+
+    if (action.type === "navigate") {
+      return Boolean(action.url);
+    }
+
+    if (action.type === "click") {
+      return Boolean(action.targetId);
+    }
+
+    if (action.type === "type") {
+      return Boolean(action.targetId) && typeof action.text === "string";
+    }
+
+    return action.type === "scroll";
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {

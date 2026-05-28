@@ -10,16 +10,19 @@ export const plannerModels = new Set([
 
 export const plannerPrompt =
   "BrowserPilot task controller. Return JSON only. Preferred schema: " +
-  "{\"reply\":\"Chinese reply\",\"evaluationPreviousGoal\":\"what happened last step\",\"memory\":\"task memory\",\"nextGoal\":\"next browser goal\",\"actions\":[{type}]}. " +
+  "{\"reply\":\"Chinese reply\",\"evaluationPreviousGoal\":\"what happened last step\",\"memory\":\"task memory\",\"nextGoal\":\"next browser goal\",\"done\":false,\"actions\":[{type}]}. " +
   "Legacy {\"reply\":\"Chinese reply\",\"action\":{type}} is also accepted, but actions[] is preferred. " +
   "Actions: none, navigate{url}, click{targetId}, type{targetId,text,submit}, scroll{direction,targetId?,amount?}. " +
-  "You receive taskState and observations from BrowserPilot tools, not raw DOM. Execute exactly one step. " +
+  "You receive taskState and layered observations from BrowserPilot tools, not raw DOM. Execute one planning step with at most two actions. " +
   "This is a browser-general agent; do not assume any site-specific schema. " +
-  "Observations may include full page slices and task-relevant actionable diffs after the last browser action. " +
-  "Available affordances are listed in observations.focused, observations.views, observations.blocks, observations.targets, observations.inputs, and observations.diff. " +
-  "observations.focused is the task-relevant retrieval shortlist; prefer its recommendedActions and candidates over broad page lists when they fit the goal. " +
+  "Observation layers: fullSnapshot for page slices, actionableDiff for changes after the last action, focusedTargetContext for task-relevant candidates, visionOnDemand for optional visual hints. " +
+  "Available affordances are listed in observations.layers, observations.focused, observations.views, observations.blocks, observations.targets, observations.inputs, and observations.diff. " +
+  "focusedTargetContext is the task-relevant retrieval shortlist; prefer its recommendedActions and candidates over broad page lists when they fit the goal. " +
+  "If the next natural operation is focus then type into the same known editable target, return both click and type actions in order. " +
+  "If taskState.recentFailures is non-empty, recover by choosing a different visible target, scrolling, or stopping with a clear reason when recovery is unsafe. " +
   "Decide from the user's original request, taskState, history, and observations whether to continue or stop. " +
-  "Return action none only when the user goal is complete, impossible, unsafe, or requires user confirmation. " +
+  "Set done true only when the user's requested browser task is complete, impossible, unsafe, or requires user confirmation. " +
+  "Return action none only when done is true or no browser action can safely advance the task. " +
   "If your reply says the task still needs a next browser step, action must not be none. " +
   "When observations.diff.candidateActions is non-empty, treat it as the generic recommended next-action shortlist. " +
   "If a required control/input is not visible but more page content can be revealed, use scroll instead of none. " +
@@ -27,11 +30,13 @@ export const plannerPrompt =
 
 export const repairPrompt =
   "BrowserPilot action repair. Return JSON only. Preferred schema: " +
-  "{\"reply\":\"Chinese reply\",\"evaluationPreviousGoal\":\"why previous output was insufficient\",\"memory\":\"task memory\",\"nextGoal\":\"next browser goal\",\"actions\":[{type}]}. " +
+  "{\"reply\":\"Chinese reply\",\"evaluationPreviousGoal\":\"why previous output was insufficient\",\"memory\":\"task memory\",\"nextGoal\":\"next browser goal\",\"done\":false,\"actions\":[{type}]}. " +
   "The previous planner reply says the browser task should continue but it returned no executable action. " +
-  "Choose exactly one generic browser action from the provided candidates and visible inputs/targets. " +
+  "Choose one or two generic browser actions from the provided candidates and visible inputs/targets. " +
   "Actions: none, navigate{url}, click{targetId}, type{targetId,text,submit}, scroll{direction,targetId?,amount?}. " +
   "Do not invent target ids. Return none only if no candidate can safely advance the task.";
+
+export const maxActionsPerStep = 2;
 
 export const intentPrompt =
   "BrowserPilot intent router. Return JSON only. " +

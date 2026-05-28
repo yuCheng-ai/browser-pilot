@@ -4,6 +4,7 @@ import {
   fallbackModel,
   intentBudget,
   intentPrompt,
+  maxActionsPerStep,
   plannerModels,
   plannerPrompt,
   repairBudget,
@@ -267,9 +268,11 @@ export function noActionRetryError(plan, { budget, model }) {
 }
 
 export function modelCandidates(model) {
-  return uniqueStrings([model || fallbackModel]).filter((candidate) =>
-    plannerModels.has(candidate),
-  );
+  return uniqueStrings([
+    model || fallbackModel,
+    fallbackModel,
+    "deepseek-chat",
+  ]).filter((candidate) => plannerModels.has(candidate));
 }
 
 function extractChoiceContent(payload) {
@@ -333,42 +336,7 @@ function emptyContentError(payload, { budget, model }) {
 }
 
 export function normalizeAction(action) {
-  if (!action || typeof action !== "object") {
-    return {
-      type: "none",
-    };
-  }
-
-  if (action.type === "navigate" && typeof action.url === "string") {
-    return {
-      type: "navigate",
-      url: action.url,
-    };
-  }
-
-  if (action.type === "click" && typeof action.targetId === "string") {
-    return {
-      type: "click",
-      targetId: action.targetId,
-    };
-  }
-
-  if (
-    action.type === "type" &&
-    typeof action.targetId === "string" &&
-    typeof action.text === "string"
-  ) {
-    return {
-      type: "type",
-      targetId: action.targetId,
-      text: action.text.slice(0, 2000),
-      submit: Boolean(action.submit),
-    };
-  }
-
-  return {
-    type: "none",
-  };
+  return normalizeRuntimeAction(action);
 }
 
 function parsePlan(content) {
@@ -383,10 +351,10 @@ function parsePlan(content) {
     throw error;
   }
 
-  return {
-    reply: cleanText(parsed.reply || "OK.", 320),
-    action: normalizeAction(parsed.action),
-  };
+  return normalizeAgentDecision(parsed, {
+    fallbackReply: "OK.",
+    maxActions: maxActionsPerStep,
+  });
 }
 
 function parseIntentPlan(content) {

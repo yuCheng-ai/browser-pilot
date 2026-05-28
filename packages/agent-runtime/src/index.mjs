@@ -10,43 +10,47 @@ const browserActionTypes = new Set([
 export function normalizeAgentDecision(raw, options = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   const fallbackReply = options.fallbackReply || "OK.";
+  const maxActions = Math.max(1, Number(options.maxActions) || 1);
   const rawActions = rawActionsFromDecision(source);
   const parsedActions = rawActions
     .map((action) => normalizeBrowserAction(action))
     .filter(Boolean);
-  const primaryAction =
-    parsedActions.find((action) => action.type !== "none") ||
-    parsedActions[0] ||
-    { type: "none" };
-  const normalizedActions = [primaryAction].slice(
-    0,
-    Math.max(1, Number(options.maxActions) || 1),
-  );
+  const executableActions = parsedActions.filter((action) => action.type !== "none");
+  const normalizedActions = executableActions.length
+    ? executableActions.slice(0, maxActions)
+    : [parsedActions[0] || { type: "none" }];
+  const primaryAction = normalizedActions[0] || { type: "none" };
   const explicitDone =
     Boolean(source.done) ||
     Boolean(source.isDone) ||
     Boolean(source.is_done) ||
     rawActions.some((action) => action?.type === "done");
+  const decision = {
+    evaluationPreviousGoal: cleanText(
+      source.evaluationPreviousGoal || source.evaluation_previous_goal,
+      320,
+    ),
+    memory: cleanText(source.memory, 500),
+    nextGoal: cleanText(source.nextGoal || source.next_goal, 320),
+    done: explicitDone,
+    success:
+      typeof source.success === "boolean"
+        ? source.success
+        : typeof source.is_success === "boolean"
+          ? source.is_success
+          : null,
+  };
 
   return {
     reply: cleanText(source.reply || source.message || fallbackReply, 320),
     action: primaryAction,
     actions: normalizedActions,
-    decision: {
-      evaluationPreviousGoal: cleanText(
-        source.evaluationPreviousGoal || source.evaluation_previous_goal,
-        320,
-      ),
-      memory: cleanText(source.memory, 500),
-      nextGoal: cleanText(source.nextGoal || source.next_goal, 320),
-      done: explicitDone,
-      success:
-        typeof source.success === "boolean"
-          ? source.success
-          : typeof source.is_success === "boolean"
-            ? source.is_success
-            : null,
-    },
+    evaluationPreviousGoal: decision.evaluationPreviousGoal,
+    memory: decision.memory,
+    nextGoal: decision.nextGoal,
+    done: decision.done,
+    success: decision.success,
+    decision,
   };
 }
 
@@ -211,6 +215,34 @@ export class ToolRegistry {
         action: normalizedAction,
       });
     }
+  }
+
+  async executeMany(actions, context = {}, options = {}) {
+    const maxActions = Math.max(1, Number(options.maxActions) || 1);
+    const results = [];
+    const normalizedActions = (Array.isArray(actions) ? actions : [actions])
+      .map((action) => normalizeBrowserAction(action))
+      .filter(Boolean)
+      .slice(0, maxActions);
+
+    for (const action of normalizedActions) {
+      const result = await this.execute(action, context);
+      results.push(result);
+
+      const tool = this.tools.get(action.type);
+      if (!result.ok || result.isDone || tool?.terminatesSequence) {
+        break;
+      }
+    }
+
+    return results.length
+      ? results
+      : [
+          createToolResult({
+            action: "none",
+            reply: "没有执行浏览器动作。",
+          }),
+        ];
   }
 }
 

@@ -30,6 +30,9 @@ export function progressHistory(progress) {
   const history = Array.isArray(progress?.history) ? progress.history : [];
   return history.map((item) => ({
     action: cleanText(item?.action, 40),
+    ok: item?.ok !== false,
+    error: cleanText(item?.error, 220),
+    goal: cleanText(item?.goal, 220),
     reply: cleanText(item?.reply, 160),
     target: cleanText(item?.target, 120),
     targetId: cleanText(item?.targetId, 40),
@@ -83,6 +86,7 @@ export function buildTaskState({ message, progress, state }) {
   const lastAction = history.at?.(-1) || history[history.length - 1] || null;
   const submittedText = completedWriteAction(history);
   const repeatedSubmitText = repeatedTypeSubmit(history);
+  const recentFailures = history.filter((item) => item.ok === false).slice(-3);
   const currentUrl = cleanText(state?.url || lastAction?.url, 240);
 
   if (history.some((item) => item.action === "navigate")) {
@@ -106,6 +110,8 @@ export function buildTaskState({ message, progress, state }) {
     requiresModelCompletionDecision: true,
     latestSubmittedText: submittedText,
     repeatedSubmittedText: repeatedSubmitText,
+    recentFailures,
+    failureCount: history.filter((item) => item.ok === false).length,
     completedSteps,
     lastAction,
     currentPage: {
@@ -136,6 +142,9 @@ export function normalizeProgress(progress, budget) {
     maxSteps: Number(progress.maxSteps) || 1,
     history: history.slice(-budget.historyLimit).map((item) => ({
       action: cleanText(item?.action, 40),
+      ok: item?.ok !== false,
+      error: cleanText(item?.error, 180),
+      goal: cleanText(item?.goal, 220),
       reply: cleanText(item?.reply, 160),
       target: cleanText(item?.target, 120),
       targetId: cleanText(item?.targetId, 40),

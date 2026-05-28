@@ -1,8 +1,8 @@
 import { budgets, intentBudget, repairBudget } from "./agent/config.mjs";
 
-import { buildIntentRequestBody, buildRepairRequestBody, buildRequestBody, errorCause, isRetryableDeepSeekError, modelCandidates, noActionRetryError, requestIntentPlan, requestPlan, shouldRetryNoAction } from "./agent/deepseek-client.mjs";
+import { buildIntentRequestBody, buildRepairRequestBody, buildRequestBody, errorCause, isRetryableDeepSeekError, modelCandidates, noActionRetryError, normalizeAction, requestIntentPlan, requestPlan, shouldRetryNoAction } from "./agent/deepseek-client.mjs";
 
-import { shouldUseIntentRouter } from "./agent/intent-lexicon.mjs";
+import { hasScrollIntent, shouldUseIntentRouter } from "./agent/intent-lexicon.mjs";
 
 import { buildTaskState, deterministicSafetyPlan } from "./agent/progress.mjs";
 
@@ -78,6 +78,39 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
           elapsedMs: Date.now() - started,
         };
         if (shouldRetryNoAction(plan, { message, progress, state })) {
+          const candidateRepair = repairNoActionFromCandidates({
+            observations,
+            plan,
+            state,
+          });
+          if (candidateRepair) {
+            return {
+              ...candidateRepair,
+              debug: {
+                model: candidateModel,
+                budget: budget.name,
+                retries: attempts.length,
+                previousError: attempts.at(-1)?.error || "",
+                observation: summarizeObservations(observations),
+                attempts: [
+                  ...attempts,
+                  successAttempt,
+                  {
+                    stage: "candidate-repair",
+                    model: "local",
+                    budget: "structured-candidates",
+                    ok: true,
+                    elapsedMs: 0,
+                    error: "",
+                  },
+                ],
+                decision: summarizeDecision(candidateRepair),
+                repaired: true,
+                repairSource: "observation-candidate",
+              },
+            };
+          }
+
           const repairAttempt = {
             stage: "repair",
             model: candidateModel,
@@ -268,4 +301,105 @@ function planDebug({ attempts, lastError, state }) {
       visuals: Array.isArray(state?.visuals) ? state.visuals.length : 0,
     },
   };
+}
+
+function repairNoActionFromCandidates({ observations, plan, state }) {
+  const action = chooseRepairAction({ observations, plan, state });
+  if (!action || action.type === "none") {
+    return null;
+  }
+
+  const reply = cleanText(plan?.reply, 320) || "继续执行下一步。";
+  return {
+    reply,
+    action,
+    actions: [action],
+    evaluationPreviousGoal: "Planner returned no executable action; selected a generic action from structured observation candidates.",
+    memory: cleanText(plan?.memory || plan?.decision?.memory, 500),
+    nextGoal: cleanText(plan?.nextGoal || plan?.decision?.nextGoal || reply, 320),
+    done: false,
+    success: null,
+    decision: {
+      evaluationPreviousGoal: "Planner returned no executable action; selected a generic action from structured observation candidates.",
+      memory: cleanText(plan?.memory || plan?.decision?.memory, 500),
+      nextGoal: cleanText(plan?.nextGoal || plan?.decision?.nextGoal || reply, 320),
+      done: false,
+      success: null,
+    },
+  };
+}
+
+function chooseRepairAction({ observations, plan, state }) {
+  const candidates = [
+    ...(observations?.focused?.recommendedActions || []),
+    ...(observations?.diff?.candidateActions || []),
+  ];
+  const normalizedCandidates = candidates
+    .map(candidateToAction)
+    .filter((action) => action && action.type !== "none");
+  const reply = `${plan?.reply || ""} ${plan?.nextGoal || ""} ${plan?.decision?.nextGoal || ""}`;
+
+  if (hasScrollIntent(reply)) {
+    const scroll = normalizedCandidates.find((action) => action.type === "scroll") ||
+      scrollActionFromPageState(state);
+    if (scroll) {
+      return scroll;
+    }
+  }
+
+  return normalizedCandidates.find((action) => action.type !== "type") || null;
+}
+
+function candidateToAction(candidate) {
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+
+  const type = cleanText(candidate.type || candidate.action, 40);
+  if (type === "click") {
+    return normalizeAction({
+      type,
+      targetId: candidate.targetId,
+    });
+  }
+
+  if (type === "scroll") {
+    return normalizeAction({
+      type,
+      targetId: candidate.targetId,
+      direction: candidate.direction || "down",
+      amount: candidate.amount || 650,
+    });
+  }
+
+  if (type === "navigate") {
+    return normalizeAction({
+      type,
+      url: candidate.url,
+    });
+  }
+
+  if (type === "type" && typeof candidate.text === "string") {
+    return normalizeAction({
+      type,
+      targetId: candidate.targetId,
+      text: candidate.text,
+      submit: candidate.submit,
+    });
+  }
+
+  return null;
+}
+
+function scrollActionFromPageState(state) {
+  const scroll = state?.state?.scroll;
+  if (!scroll || Number(scroll.y) >= Number(scroll.maxY)) {
+    return null;
+  }
+
+  return normalizeAction({
+    type: "scroll",
+    direction: "down",
+    amount: 650,
+  });
 }
