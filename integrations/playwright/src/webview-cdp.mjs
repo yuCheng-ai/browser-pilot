@@ -35,15 +35,26 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
       ignore: false,
     });
     await enableBestEffort(cdp, "Page.bringToFront");
+    const beforePageState = await captureCompactPageState(cdp);
+    const beforeFingerprint = fingerprintPageState(beforePageState);
 
     if (action.type === "navigate") {
       const url = normalizeUrl(action.url);
       await cdp.send("Page.navigate", { url });
-      await delay(900);
+      const progress = await waitForPageProgress(cdp, beforePageState, {
+        actionType: "navigate",
+      });
       return {
-        reply: `已通过 CDP 打开 ${url}。`,
+        ...progressResult({
+          beforeFingerprint,
+          beforePageState,
+          progress,
+        }),
+        reply: progress.changed
+          ? `已通过 CDP 打开 ${url}。`
+          : `已通过 CDP 打开 ${url}，但未检测到页面变化。`,
         action: "navigate",
-        url,
+        url: progress.afterPageState?.url || url,
         point: null,
         target: null,
       };
@@ -52,12 +63,21 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
     if (action.type === "click") {
       const { point } = await locateTarget(cdp, action.targetId, stateTarget);
       await dispatchClick(cdp, point);
-      await delay(800);
+      const progress = await waitForPageProgress(cdp, beforePageState, {
+        actionType: "click",
+      });
 
       return {
-        reply: `已通过 CDP 点击 ${stateTarget?.label || action.targetId}。`,
+        ...progressResult({
+          beforeFingerprint,
+          beforePageState,
+          progress,
+        }),
+        reply: progress.changed
+          ? `已通过 CDP 点击 ${stateTarget?.label || action.targetId}。`
+          : `已通过 CDP 点击 ${stateTarget?.label || action.targetId}，但未检测到页面变化。`,
         action: "click",
-        url: state?.url || targetInfo.url || "",
+        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
         point,
         target: stateTarget || null,
       };
@@ -75,13 +95,22 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
         await pressEnter(cdp);
       }
 
-      await delay(800);
+      const progress = await waitForPageProgress(cdp, beforePageState, {
+        actionType: "type",
+      });
       return {
+        ...progressResult({
+          beforeFingerprint,
+          beforePageState,
+          progress,
+        }),
         reply: action.submit
-          ? `已通过 CDP 输入并提交：${action.text || ""}。`
+          ? progress.changed
+            ? `已通过 CDP 输入并提交：${action.text || ""}。`
+            : "已通过 CDP 输入并尝试提交，但未检测到页面变化。"
           : `已通过 CDP 输入：${action.text || ""}。`,
         action: "type",
-        url: state?.url || targetInfo.url || "",
+        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
         point,
         target: stateTarget || null,
       };
@@ -94,11 +123,20 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
       const amount = Math.max(80, Math.min(1800, Number(action.amount) || 650));
       const deltaY = action.direction === "up" ? -amount : amount;
       await dispatchWheel(cdp, point, deltaY);
-      await delay(500);
+      const progress = await waitForPageProgress(cdp, beforePageState, {
+        actionType: "scroll",
+      });
       return {
-        reply: `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动。`,
+        ...progressResult({
+          beforeFingerprint,
+          beforePageState,
+          progress,
+        }),
+        reply: progress.changed
+          ? `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动。`
+          : `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动，但未检测到页面变化。`,
         action: "scroll",
-        url: state?.url || targetInfo.url || "",
+        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
         point,
         target: stateTarget || null,
       };
@@ -193,6 +231,149 @@ async function viewportCenter(cdp) {
   return {
     x: Math.round((Number(viewport?.width) || 1280) / 2),
     y: Math.round((Number(viewport?.height) || 900) / 2),
+  };
+}
+
+export async function captureCompactPageState(cdp) {
+  return evaluate(
+    cdp,
+    `(() => {
+      const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const active = document.activeElement;
+      const activeText = active
+        ? ("value" in active ? active.value : active.innerText || active.textContent || "")
+        : "";
+      const buttonLike = Array.from(document.querySelectorAll([
+        "button",
+        "input[type='button']",
+        "input[type='submit']",
+        "[role='button']",
+        "[onclick]"
+      ].join(",")));
+      const actionButtonCount = buttonLike.filter((el) => {
+        const text = normalize([
+          el.innerText,
+          el.textContent,
+          el.getAttribute("aria-label"),
+          el.getAttribute("title"),
+          el.getAttribute("value")
+        ].filter(Boolean).join(" "));
+        return /send|submit|post|publish|search|confirm|save|ok|done|go|发送|提交|发表|发布|搜索|确认|保存|完成/.test(text.toLowerCase());
+      }).length;
+      const maxX = Math.max(0, document.documentElement.scrollWidth - innerWidth);
+      const maxY = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+
+      return {
+        url: location.href,
+        title: document.title,
+        readyState: document.readyState,
+        activeTag: active?.tagName || "",
+        activeTargetId: active?.getAttribute?.("data-browser-pilot-target-id") || "",
+        activeText: normalize(activeText).slice(0, 500),
+        bodyTextSample: normalize(document.body?.innerText).slice(0, 3000),
+        targetCount: document.querySelectorAll("[data-browser-pilot-target-id]").length,
+        inputCount: document.querySelectorAll("input:not([type='hidden']), textarea, select, [role='textbox'], [contenteditable]:not([contenteditable='false'])").length,
+        actionButtonCount,
+        scroll: {
+          x: Math.round(scrollX || document.documentElement.scrollLeft || 0),
+          y: Math.round(scrollY || document.documentElement.scrollTop || 0),
+          maxX: Math.round(maxX),
+          maxY: Math.round(maxY)
+        },
+        viewport: {
+          width: Math.round(innerWidth || 0),
+          height: Math.round(innerHeight || 0)
+        }
+      };
+    })()`,
+  );
+}
+
+export function fingerprintPageState(pageState) {
+  const value = [
+    urlWithoutHash(pageState?.url),
+    cleanString(pageState?.title, 300),
+    cleanString(pageState?.readyState, 40),
+    cleanString(pageState?.activeTargetId, 80),
+    normalizeComparableText(pageState?.bodyTextSample),
+    Number(pageState?.targetCount) || 0,
+    Number(pageState?.inputCount) || 0,
+    Number(pageState?.scroll?.y) || 0,
+    Number(pageState?.scroll?.maxY) || 0,
+  ].join("|");
+  return stableHash(value);
+}
+
+export function comparePageState(before, after) {
+  const bodyTextChanged =
+    stableHash(normalizeComparableText(before?.bodyTextSample)) !==
+    stableHash(normalizeComparableText(after?.bodyTextSample));
+  const activeTextChanged =
+    stableHash(normalizeComparableText(before?.activeText)) !==
+    stableHash(normalizeComparableText(after?.activeText));
+  const signals = {
+    urlChanged: urlWithoutHash(before?.url) !== urlWithoutHash(after?.url),
+    titleChanged: cleanString(before?.title, 300) !== cleanString(after?.title, 300),
+    activeTargetChanged: activeElementKey(before) !== activeElementKey(after),
+    bodyTextChanged,
+    activeTextChanged,
+    targetCountChanged: Number(before?.targetCount) !== Number(after?.targetCount),
+    inputCountChanged: Number(before?.inputCount) !== Number(after?.inputCount),
+    scrollChanged: scrollChanged(before?.scroll, after?.scroll),
+    readyStateChanged:
+      cleanString(before?.readyState, 40) !== cleanString(after?.readyState, 40),
+  };
+  const changed = Object.values(signals).some(Boolean);
+
+  return {
+    changed,
+    ...signals,
+  };
+}
+
+export async function waitForPageProgress(cdp, before, options = {}) {
+  const actionType = cleanString(options.actionType, 40);
+  const timeoutMs =
+    actionType === "navigate"
+      ? 5000
+      : actionType === "scroll"
+        ? 1200
+        : 2500;
+  const intervalMs = 200;
+  const deadline = Date.now() + timeoutMs;
+  let afterPageState = before;
+  let comparison = comparePageState(before, afterPageState);
+
+  while (Date.now() < deadline) {
+    await delay(intervalMs);
+    const current = await safeCaptureCompactPageState(cdp);
+    if (!current) {
+      continue;
+    }
+
+    afterPageState = current;
+    comparison = comparePageState(before, current);
+    if (
+      comparison.changed ||
+      (actionType === "navigate" &&
+        (comparison.urlChanged ||
+          comparison.bodyTextChanged ||
+          (comparison.readyStateChanged && current.readyState === "complete")))
+    ) {
+      return {
+        changed: comparison.changed,
+        signals: progressSignalsFromComparison(comparison),
+        afterPageState,
+        afterFingerprint: fingerprintPageState(afterPageState),
+      };
+    }
+  }
+
+  return {
+    changed: comparison.changed,
+    signals: progressSignalsFromComparison(comparison),
+    afterPageState,
+    afterFingerprint: fingerprintPageState(afterPageState),
   };
 }
 
@@ -519,6 +700,88 @@ function centerPoint(box) {
     x: Math.round(box.x + box.width / 2),
     y: Math.round(box.y + box.height / 2),
   };
+}
+
+function progressResult({ beforeFingerprint, beforePageState, progress }) {
+  return {
+    ok: true,
+    executed: true,
+    changed: Boolean(progress.changed),
+    progressSignals: progress.signals,
+    beforePageState,
+    afterPageState: progress.afterPageState,
+    beforeFingerprint,
+    afterFingerprint: progress.afterFingerprint,
+  };
+}
+
+function progressSignalsFromComparison(comparison) {
+  return {
+    urlChanged: Boolean(comparison.urlChanged),
+    titleChanged: Boolean(comparison.titleChanged),
+    activeTargetChanged: Boolean(comparison.activeTargetChanged),
+    bodyTextChanged: Boolean(comparison.bodyTextChanged),
+    targetCountChanged: Boolean(comparison.targetCountChanged),
+    inputCountChanged: Boolean(comparison.inputCountChanged),
+    scrollChanged: Boolean(comparison.scrollChanged),
+    readyStateChanged: Boolean(comparison.readyStateChanged),
+    activeTextChanged: Boolean(comparison.activeTextChanged),
+  };
+}
+
+async function safeCaptureCompactPageState(cdp) {
+  try {
+    return await captureCompactPageState(cdp);
+  } catch {
+    return null;
+  }
+}
+
+function activeElementKey(state) {
+  const targetId = cleanString(state?.activeTargetId, 80);
+  if (targetId) {
+    return `target:${targetId}`;
+  }
+
+  return [
+    cleanString(state?.activeTag, 40),
+    stableHash(normalizeComparableText(state?.activeText)),
+  ].join(":");
+}
+
+function scrollChanged(before, after) {
+  return (
+    Math.abs((Number(before?.x) || 0) - (Number(after?.x) || 0)) > 5 ||
+    Math.abs((Number(before?.y) || 0) - (Number(after?.y) || 0)) > 5 ||
+    Math.abs((Number(before?.maxX) || 0) - (Number(after?.maxX) || 0)) > 5 ||
+    Math.abs((Number(before?.maxY) || 0) - (Number(after?.maxY) || 0)) > 5
+  );
+}
+
+function normalizeComparableText(value) {
+  return cleanString(value, 4000).toLowerCase();
+}
+
+function urlWithoutHash(value) {
+  const text = String(value || "");
+  try {
+    const url = new URL(text);
+    url.hash = "";
+    return url.href;
+  } catch {
+    return text.split("#")[0];
+  }
+}
+
+function stableHash(value) {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(36);
 }
 
 function endpoint(options) {

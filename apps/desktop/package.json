@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "dev:tauri-stack": "concurrently -k -n server,desktop \"npm run dev --workspace @browser-pilot/local-server\" \"vite --host 127.0.0.1\"",
+    "dev": "vite --host 127.0.0.1 --strictPort",
+    "dev:tauri-stack": "node ../../scripts/kill-port.mjs 4178 && concurrently -k -n server,desktop \"npm run dev --workspace @browser-pilot/local-server\" \"vite --host 127.0.0.1 --strictPort\"",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "tauri": "tauri"

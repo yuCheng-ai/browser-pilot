@@ -150,9 +150,34 @@ const server = createServer(async (request, response) => {
   }
 });
 
+server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.error(
+      `BrowserPilot local server port ${port} is already in use. Run "npm run stop:server" and start again.`,
+    );
+    process.exit(1);
+    return;
+  }
+
+  throw error;
+});
+
 server.listen(port, "127.0.0.1", () => {
   console.log(`BrowserPilot local server listening on http://127.0.0.1:${port}`);
 });
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+function shutdown(signal) {
+  console.log(`BrowserPilot local server received ${signal}, shutting down.`);
+  server.close(async () => {
+    await session.close?.();
+    process.exit(0);
+  });
+
+  setTimeout(() => process.exit(0), 2500).unref();
+}
 
 function buildExternalBrowserObservations(payload) {
   const message = String(payload?.message || "").trim();

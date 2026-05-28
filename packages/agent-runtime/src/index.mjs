@@ -249,6 +249,8 @@ export class ToolRegistry {
 export function createToolResult(input = {}) {
   return {
     ok: input.ok !== false,
+    executed: Boolean(input.executed),
+    changed: Boolean(input.changed),
     isDone: Boolean(input.isDone),
     success:
       typeof input.success === "boolean"
@@ -263,6 +265,11 @@ export function createToolResult(input = {}) {
     url: cleanText(input.url, 500),
     point: input.point || null,
     target: input.target || null,
+    progressSignals: input.progressSignals || null,
+    beforePageState: input.beforePageState || null,
+    afterPageState: input.afterPageState || null,
+    beforeFingerprint: cleanText(input.beforeFingerprint, 120),
+    afterFingerprint: cleanText(input.afterFingerprint, 120),
     metadata: input.metadata || null,
   };
 }
@@ -277,6 +284,7 @@ export function normalizeToolResult(value, options = {}) {
   }
 
   return createToolResult({
+    ...value,
     ok: true,
     action: options.action?.type,
     reply: options.fallbackReply,

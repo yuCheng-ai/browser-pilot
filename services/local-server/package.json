@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/server.mjs",
+    "dev": "node ../../scripts/kill-port.mjs 4178 && node --watch src/server.mjs",
     "start": "node src/server.mjs",
     "check": "node --check src/server.mjs && node --check src/deepseek-agent.mjs && node --check src/browser-tools.mjs && node --check src/agent/config.mjs && node --check src/agent/text.mjs && node --check src/agent/intent-lexicon.mjs && node --check src/agent/progress.mjs && node --check src/agent/deepseek-client.mjs && node --check src/agent/observations.mjs"
   },

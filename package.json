@@ -9,10 +9,15 @@
     "integrations/*"
   ],
   "scripts": {
-    "dev": "concurrently -k -n server,desktop \"npm run dev --workspace @browser-pilot/local-server\" \"npm run dev --workspace @browser-pilot/desktop\"",
+    "dev": "npm run stop:dev && concurrently -k -n server,desktop \"npm run dev --workspace @browser-pilot/local-server\" \"npm run dev --workspace @browser-pilot/desktop\"",
+    "dev:web": "npm run dev",
     "dev:desktop": "npm run dev --workspace @browser-pilot/desktop",
     "dev:server": "npm run dev --workspace @browser-pilot/local-server",
-    "desktop:tauri": "npm run tauri --workspace @browser-pilot/desktop --",
+    "desktop:dev": "npm run stop:dev && npm run tauri --workspace @browser-pilot/desktop -- dev",
+    "desktop:tauri": "npm run desktop:dev",
+    "desktop:build": "npm run tauri --workspace @browser-pilot/desktop -- build",
+    "stop:dev": "node scripts/kill-port.mjs 4178 5173",
+    "stop:server": "node scripts/kill-port.mjs 4178",
     "setup:browsers": "playwright install chromium",
     "build": "npm run build --workspaces --if-present",
     "check": "npm run check --workspaces --if-present"

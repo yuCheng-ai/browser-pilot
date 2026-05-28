@@ -289,6 +289,17 @@ export class BrowserPilotSession {
     });
   }
 
+  async close() {
+    if (this.context) {
+      await this.context.close().catch(() => {});
+    }
+
+    this.context = null;
+    this.launchPromise = null;
+    this.page = null;
+    this.targets.clear();
+  }
+
   async launchContextWithOptions({ restoreUrl, visibleWindow }) {
     await mkdir(this.profileDir, { recursive: true });
 
