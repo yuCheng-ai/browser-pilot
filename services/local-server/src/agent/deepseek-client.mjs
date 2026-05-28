@@ -1,9 +1,13 @@
 import { normalizeAgentDecision, normalizeBrowserAction as normalizeRuntimeAction } from "../../../../packages/agent-runtime/src/index.mjs";
 
 import {
+  absoluteMaxSteps,
+  absoluteMaxStepsHardLimit,
   fallbackModel,
   intentBudget,
   intentPrompt,
+  loopJudgeBudget,
+  loopJudgePrompt,
   maxActionsPerStep,
   plannerModels,
   plannerPrompt,
@@ -208,6 +212,125 @@ export function buildRepairRequestBody({ message, model, observations, previousP
         }),
       },
     ],
+  };
+}
+
+export function buildLoopJudgeRequestBody({ loopState, model }) {
+  return {
+    model,
+    thinking: {
+      type: "disabled",
+    },
+    temperature: 0,
+    max_tokens: loopJudgeBudget.maxTokens,
+    response_format: {
+      type: "json_object",
+    },
+    messages: [
+      {
+        role: "system",
+        content: loopJudgePrompt,
+      },
+      {
+        role: "user",
+        content: JSON.stringify(loopState),
+      },
+    ],
+  };
+}
+
+export async function requestLoopJudgement({ apiKey, loopState, model, timeoutMs }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs || loopJudgeBudget.timeoutMs);
+  let response;
+  let payload;
+
+  try {
+    response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildLoopJudgeRequestBody({ loopState, model })),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw annotateRetryable(error);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  try {
+    payload = await response.json();
+  } catch {
+    payload = {
+      message: await response.text().catch(() => ""),
+    };
+  }
+
+  if (!response.ok) {
+    const message =
+      payload?.error?.message ||
+      payload?.message ||
+      `DeepSeek HTTP ${response.status}`;
+    const error = new Error(message);
+    error.providerCode = payload?.error?.code || "";
+    error.providerStatus = response.status;
+    error.retryable = response.status >= 500;
+    throw error;
+  }
+
+  const content = extractChoiceContent(payload);
+  if (!content) {
+    return {
+      status: "progressing",
+      confidence: 0.5,
+      shouldContinue: true,
+      shouldChangeStrategy: false,
+      reason: "LoopJudge LLM returned empty content; defaulting to progressing.",
+      recommendedNextStrategy: "",
+      risk: "low",
+    };
+  }
+
+  return parseLoopJudgement(content);
+}
+
+function parseLoopJudgement(content) {
+  let parsed;
+  const json = extractJsonObject(content);
+
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return {
+      status: "progressing",
+      confidence: 0.5,
+      shouldContinue: true,
+      shouldChangeStrategy: false,
+      reason: "LoopJudge returned invalid JSON; defaulting to progressing.",
+      recommendedNextStrategy: "",
+      risk: "low",
+    };
+  }
+
+  const validStatuses = new Set(["progressing", "exploring", "recovering", "stuck_loop", "near_completion"]);
+  const status = validStatuses.has(parsed.status) ? parsed.status : "progressing";
+  const confidence = Number.isFinite(Number(parsed.confidence))
+    ? Math.max(0, Math.min(1, Number(parsed.confidence)))
+    : 0.5;
+  const validRisks = new Set(["low", "medium", "high"]);
+  const risk = validRisks.has(String(parsed.risk)) ? String(parsed.risk) : "low";
+
+  return {
+    status,
+    confidence,
+    shouldContinue: parsed.shouldContinue !== false,
+    shouldChangeStrategy: Boolean(parsed.shouldChangeStrategy),
+    reason: cleanText(parsed.reason, 320),
+    recommendedNextStrategy: cleanText(parsed.recommendedNextStrategy, 320),
+    risk,
   };
 }
 
@@ -432,9 +555,9 @@ export function errorCause(error) {
 export function shouldRetryNoAction(plan, { message, progress, state }) {
   if (plan?.action?.type !== "none") return false;
   if (plan?.decision?.done || plan?.action?.done) return false;
-  const maxSteps = Number(progress?.maxSteps) || 1;
   const step = Number(progress?.step) || 1;
-  if (step >= maxSteps) return false;
+  const absMax = Math.min(absoluteMaxSteps(), absoluteMaxStepsHardLimit);
+  if (step >= absMax) return false;
   if (!Array.isArray(state?.targets) || !state.targets.length) return false;
   if (!hasBrowserActionIntent(message)) return false;
   return !isTerminalNoActionReply(cleanText(plan?.reply, 220));

@@ -110,3 +110,34 @@ export const repairBudget = {
   timeoutMs: 9000,
   jsonMode: true,
 };
+
+export const softMaxSteps = 8;
+
+export function absoluteMaxSteps() {
+  return Math.max(softMaxSteps + 8, 24);
+}
+
+export const absoluteMaxStepsHardLimit = 40;
+
+export const loopJudgeBudget = {
+  name: "loop-judge",
+  maxTokens: 300,
+  timeoutMs: 10000,
+  jsonMode: true,
+};
+
+export const loopJudgePrompt =
+  "BrowserPilot loop judge. You analyze recent browser action trajectories to determine if the agent is making progress or stuck in a loop. " +
+  "Return JSON only. Schema: {\"status\":\"progressing\"|\"exploring\"|\"recovering\"|\"stuck_loop\"|\"near_completion\",\"confidence\":0-1,\"shouldContinue\":boolean,\"shouldChangeStrategy\":boolean,\"reason\":\"brief Chinese reason\",\"recommendedNextStrategy\":\"Chinese suggestion\",\"risk\":\"low\"|\"medium\"|\"high\"}. " +
+  "Judgment criteria: " +
+  "- If the page transitions from homepage to search results, detail pages, forms, or comment boxes, that is progressing or near_completion. " +
+  "- If recent actions have many changed=true, it is not stuck_loop. " +
+  "- If the last 3 afterFingerprint values are identical and changed=false for all, lean toward stuck_loop. " +
+  "- If actions vary but never approach the user goal, it can also be stuck_loop. " +
+  "- If the last action activated an input box and the user goal involves commenting/replying/typing/filling, it is near_completion. " +
+  "- If text has been typed and the next step is a public send/publish, it is near_completion with risk=medium; the agent must NOT auto-send without user confirmation. " +
+  "- Do NOT judge stuck_loop just because the step count is high. " +
+  "- Do NOT use site-specific logic. " +
+  "- recovering: the agent has recent failures but is attempting recovery actions. " +
+  "- exploring: the agent is scrolling or clicking through candidates reasonably. " +
+  "Output must be valid JSON only, no extra text.";

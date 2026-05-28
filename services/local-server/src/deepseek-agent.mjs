@@ -1,10 +1,10 @@
-import { budgets, intentBudget, repairBudget } from "./agent/config.mjs";
+import { budgets, intentBudget, repairBudget, softMaxSteps, absoluteMaxSteps, absoluteMaxStepsHardLimit } from "./agent/config.mjs";
 
-import { buildIntentRequestBody, buildRepairRequestBody, buildRequestBody, errorCause, isRetryableDeepSeekError, modelCandidates, noActionRetryError, normalizeAction, requestIntentPlan, requestPlan, shouldRetryNoAction } from "./agent/deepseek-client.mjs";
+import { buildIntentRequestBody, buildLoopJudgeRequestBody, buildRepairRequestBody, buildRequestBody, errorCause, isRetryableDeepSeekError, modelCandidates, noActionRetryError, normalizeAction, requestIntentPlan, requestLoopJudgement, requestPlan, shouldRetryNoAction } from "./agent/deepseek-client.mjs";
 
 import { hasScrollIntent, shouldUseIntentRouter } from "./agent/intent-lexicon.mjs";
 
-import { buildTaskState, deterministicSafetyPlan } from "./agent/progress.mjs";
+import { buildLoopJudgeState, buildTaskState, deterministicSafetyPlan } from "./agent/progress.mjs";
 
 import { buildAgentObservations, summarizeDecision, summarizeObservations } from "./agent/observations.mjs";
 
@@ -20,6 +20,95 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
   const safety = deterministicSafetyPlan({ message, progress });
   if (safety) {
     return safety;
+  }
+
+  const step = Number(progress?.step) || 1;
+  const absMax = Math.min(absoluteMaxSteps(), absoluteMaxStepsHardLimit);
+
+  if (step >= absMax) {
+    return {
+      reply: `已达到绝对最大步骤限制（${absMax}步），任务停止。`,
+      action: {
+        type: "none",
+      },
+      done: true,
+      decision: {
+        done: true,
+        success: false,
+        nextGoal: "已达到绝对最大步骤限制。",
+        memory: "任务步骤已达上限。",
+        evaluationPreviousGoal: "任务步骤已达上限，必须停止。",
+      },
+    };
+  }
+
+  if (step >= softMaxSteps) {
+    const loopState = buildLoopJudgeState({ message, progress, state });
+    let loopJudgement;
+
+    try {
+      loopJudgement = await requestLoopJudgement({
+        apiKey,
+        loopState,
+        model,
+      });
+    } catch {
+      loopJudgement = {
+        status: "progressing",
+        confidence: 0.5,
+        shouldContinue: true,
+        shouldChangeStrategy: false,
+        reason: "LoopJudge API call failed; defaulting to progressing.",
+        recommendedNextStrategy: "",
+        risk: "low",
+      };
+    }
+
+    if (loopJudgement.status === "stuck_loop" && loopJudgement.confidence >= 0.7) {
+      return {
+        reply: loopJudgement.shouldChangeStrategy
+          ? `检测到无效循环：${loopJudgement.reason}。建议换策略：${loopJudgement.recommendedNextStrategy || "随机尝试不同的可选目标"}。`
+          : `检测到无效循环：${loopJudgement.reason}。建议停止当前任务。`,
+        action: {
+          type: "none",
+        },
+        done: !loopJudgement.shouldChangeStrategy,
+        decision: {
+          done: !loopJudgement.shouldChangeStrategy,
+          success: false,
+          nextGoal: loopJudgement.recommendedNextStrategy || "暂停当前任务。",
+          memory: `LoopJudge detected stuck loop at step ${step}: ${loopJudgement.reason}`,
+          evaluationPreviousGoal: `LoopJudge returned stuck_loop (confidence=${loopJudgement.confidence}): ${loopJudgement.reason}`,
+        },
+      };
+    }
+
+    if (loopJudgement.status === "near_completion" && loopJudgement.risk === "high") {
+      return {
+        reply: `LoopJudge 判断接近完成但存在高风险：${loopJudgement.reason}。需要用户确认后才能继续。`,
+        action: {
+          type: "none",
+        },
+        done: false,
+        decision: {
+          done: false,
+          success: null,
+          nextGoal: "等待用户确认高风险操作。",
+          memory: `LoopJudge near_completion with high risk: ${loopJudgement.reason}`,
+          evaluationPreviousGoal: `LoopJudge returned near_completion (risk=high, confidence=${loopJudgement.confidence}): ${loopJudgement.reason}`,
+        },
+      };
+    }
+
+    progress = {
+      ...progress,
+      loopJudgement,
+      loopWarning: loopJudgement.shouldChangeStrategy
+        ? `LoopJudge warning: ${loopJudgement.reason}. 建议：${loopJudgement.recommendedNextStrategy || "换策略"}`
+        : loopJudgement.reason,
+      shouldChangeStrategy: loopJudgement.shouldChangeStrategy,
+      nearCompletion: loopJudgement.status === "near_completion",
+    };
   }
 
   let lastError = null;
