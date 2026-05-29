@@ -1,6 +1,6 @@
 import { budgets, intentBudget, repairBudget, softMaxSteps, absoluteMaxSteps, absoluteMaxStepsHardLimit } from "./agent/config.mjs";
 
-import { buildIntentRequestBody, buildLoopJudgeRequestBody, buildRepairRequestBody, buildRequestBody, errorCause, isRetryableDeepSeekError, modelCandidates, noActionRetryError, normalizeAction, requestIntentPlan, requestLoopJudgement, requestPlan, shouldRetryNoAction } from "./agent/deepseek-client.mjs";
+import { buildIntentRequestBody, buildLoopJudgeRequestBody, buildRepairRequestBody, buildRequestBody, errorCause, isRetryableDeepSeekError, modelCandidates, noActionRetryError, normalizeAction, requestIntentPlan, requestLoopJudgement, requestPlan, shouldRetryNoAction } from "./agent/llm-client.mjs";
 
 import { hasScrollIntent, shouldUseIntentRouter } from "./agent/intent-lexicon.mjs";
 
@@ -9,6 +9,7 @@ import { buildLoopJudgeState, buildTaskState, deterministicSafetyPlan } from "./
 import { buildAgentObservations, summarizeDecision, summarizeObservations } from "./agent/observations.mjs";
 
 import { byteLength, cleanText } from "./agent/text.mjs";
+import { createThinkingLog } from "./thinking-log.mjs";
 
 
 
@@ -16,7 +17,8 @@ export { buildAgentObservations } from "./agent/observations.mjs";
 
 
 
-export async function planBrowserAction({ apiKey, model, message, observation, state, vision, progress }) {
+export async function planBrowserAction({ apiKey, model, message, observation, state, vision, progress, thinkingLog }) {
+  const log = thinkingLog || createThinkingLog();
   const safety = deterministicSafetyPlan({ message, progress });
   if (safety) {
     return safety;
@@ -63,6 +65,8 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
         risk: "low",
       };
     }
+
+    log.loopCheck({ status: loopJudgement.status, reason: loopJudgement.reason });
 
     if (loopJudgement.status === "stuck_loop" && loopJudgement.confidence >= 0.7) {
       return {
@@ -119,6 +123,7 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
     message,
     model,
     progress,
+    log,
   });
 
   if (intentPlan) {
@@ -154,6 +159,7 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
       };
       const started = Date.now();
       try {
+        log.observe({ title: `正在规划 (${candidateModel}/${budget.name})` });
         const plan = await requestPlan({
           apiKey,
           budget,

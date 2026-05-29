@@ -19,6 +19,24 @@ import {
   planBrowserAction,
 } from "./deepseek-agent.mjs";
 import { buildVisionContext } from "../../../packages/vision-inspector/src/index.mjs";
+import { takeAccessibilitySnapshot } from "./accessibility-snapshot.mjs";
+import { createThinkingLog } from "./thinking-log.mjs";
+import { createExtractor } from "../../../packages/extractor/src/index.mjs";
+
+let extractor = null;
+
+async function getExtractor() {
+  if (!extractor) {
+    try {
+      const firecrawlMod = await import("firecrawl");
+      const Firecrawl = firecrawlMod.Firecrawl || firecrawlMod.default;
+      extractor = createExtractor(Firecrawl);
+    } catch {
+      extractor = null;
+    }
+  }
+  return extractor;
+}
 
 const serviceDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(serviceDir, "../../..");
@@ -87,6 +105,65 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/api/browser/show") {
       sendJson(response, 200, await session.showVisibleBrowser());
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/browser/accessibility-snapshot") {
+      const page = await session.ensurePage();
+      const snapshot = await takeAccessibilitySnapshot(page);
+      sendJson(response, 200, snapshot);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/extract/scrape") {
+      const payload = await readJson(request);
+      const ext = await getExtractor();
+      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
+      const result = await ext.scrapeUrl(payload.url, {
+        apiKey: payload.apiKey,
+        formats: payload.formats,
+        onlyMainContent: payload.onlyMainContent !== false,
+        waitFor: payload.waitFor,
+        timeout: payload.timeout,
+      });
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/extract/crawl") {
+      const payload = await readJson(request);
+      const ext = await getExtractor();
+      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
+      const result = await ext.crawlSite(payload.url, {
+        apiKey: payload.apiKey,
+        limit: payload.limit,
+        maxDepth: payload.maxDepth,
+      });
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/extract/batch-scrape") {
+      const payload = await readJson(request);
+      const ext = await getExtractor();
+      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
+      const result = await ext.batchScrape(payload.urls, {
+        apiKey: payload.apiKey,
+        formats: payload.formats,
+        onlyMainContent: payload.onlyMainContent !== false,
+      });
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/extract/map") {
+      const payload = await readJson(request);
+      const ext = await getExtractor();
+      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
+      const result = await ext.mapSite(payload.url, {
+        apiKey: payload.apiKey,
+      });
+      sendJson(response, 200, result);
       return;
     }
 
@@ -232,6 +309,13 @@ async function planExternalBrowserTurn(payload) {
   };
 }
 
+function buildStateSummary(state) {
+  const parts = [];
+  if (state?.url) parts.push(state.url);
+  if (state?.title) parts.push(state.title);
+  return parts.join(" · ") || "当前页面";
+}
+
 async function runChatTurn(message) {
   if (!String(message || "").trim()) {
     throw new Error("任务内容不能为空。");
@@ -242,7 +326,10 @@ async function runChatTurn(message) {
     throw new Error("先在设置中保存 DeepSeek API Key。");
   }
 
+  const thinkingLog = createThinkingLog();
   const state = await session.snapshot();
+  thinkingLog.observe({ title: "观察页面", detail: buildStateSummary(state) });
+
   const normalizedMessage = String(message).trim();
   const plan = await planBrowserAction({
     apiKey: settings.deepSeekApiKey,
@@ -252,10 +339,18 @@ async function runChatTurn(message) {
     vision: buildVisionContext({ message: normalizedMessage, state }),
   });
 
+  thinkingLog.plan({
+    model: settings.model,
+    actions: plan.actions || [plan.action],
+    reply: plan.reply,
+  });
+
   const results = await executeSessionBrowserActions(session, plan.actions || [plan.action], {
     maxActions: 2,
   });
   const result = results.at(-1) || { state };
+
+  thinkingLog.action({ actions: plan.actions || [plan.action], results });
 
   return {
     message: plan.reply,
@@ -263,6 +358,7 @@ async function runChatTurn(message) {
     results,
     result,
     state: result.state || state,
+    thinking: thinkingLog.toArray(),
   };
 }
 

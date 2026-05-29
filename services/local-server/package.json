@@ -9,6 +9,11 @@
     "check": "node --check src/server.mjs && node --check src/deepseek-agent.mjs && node --check src/browser-tools.mjs && node --check src/agent/config.mjs && node --check src/agent/text.mjs && node --check src/agent/intent-lexicon.mjs && node --check src/agent/progress.mjs && node --check src/agent/deepseek-client.mjs && node --check src/agent/observations.mjs"
   },
   "dependencies": {
-    "@browser-pilot/playwright": "0.1.0"
+    "@ai-sdk/deepseek": "^2.0.35",
+    "@browser-pilot/playwright": "workspace:*",
+    "@playwright/mcp": "^0.0.75",
+    "ai": "^6.0.191",
+    "firecrawl": "^4.25.1",
+    "langfuse": "^3.38.20"
   }
 }

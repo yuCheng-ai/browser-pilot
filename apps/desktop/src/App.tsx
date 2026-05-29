@@ -772,11 +772,12 @@ export function App() {
 
       }
 
-      const result = await api<{ message: string }>("/api/chat", {
+      const result = await api<{ message: string; thinking?: AgentTraceItem[] }>("/api/chat", {
         method: "POST",
         body: JSON.stringify({ message: text }),
       });
 
+      setAgentTrace(result.thinking || []);
       setMessages((current) => [
         ...current,
         newMessage("assistant", result.message),
@@ -1355,6 +1356,22 @@ export function App() {
             对比本页与竞品页的差异
           </button>
         </div>
+
+        {agentTrace.length > 0 && (
+          <div className="agent-thinking">
+            <header>
+              <strong>思考过程</strong>
+            </header>
+            <ol>
+              {agentTrace.map((item) => (
+                <li className={`is-${item.phase}`} key={item.id}>
+                  <strong>{item.title}</strong>
+                  {item.detail && <p>{item.detail}</p>}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
 
         <form className="composer" onSubmit={sendMessage}>
           <Sparkles />

@@ -1,6 +1,6 @@
 import { budgets } from "./config.mjs";
 
-import { normalizeAction } from "./deepseek-client.mjs";
+import { normalizeAction } from "./llm-client.mjs";
 
 import { hasContentSelectionIntent, hasNavigationIntent, hasReadIntent, hasWriteIntent } from "./intent-lexicon.mjs";
 
