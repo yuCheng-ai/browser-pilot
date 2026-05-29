@@ -33,6 +33,9 @@ type ChatMessage = {
   id: string;
   role: "assistant" | "user";
   text: string;
+  thinking?: AgentTraceItem[];
+  _pending?: boolean;
+  _startedAt?: number;
 };
 
 type BrowserWebviewError = {
@@ -369,22 +372,31 @@ const initialMessages: ChatMessage[] = [
   },
 ];
 
-async function api<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-    ...options,
-  });
+async function api<T>(url: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs = 60000, ...fetchOptions } = options || {};
+  const controller = new AbortController();
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
-  const payload = (await response.json()) as T & { error?: string; debug?: unknown };
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...fetchOptions.headers,
+      },
+      ...fetchOptions,
+    });
 
-  if (!response.ok) {
-    throw new Error(formatApiError(payload.error || "请求失败。", payload.debug));
+    const payload = (await response.json()) as T & { error?: string; debug?: unknown };
+
+    if (!response.ok) {
+      throw new Error(formatApiError(payload.error || "请求失败。", payload.debug));
+    }
+
+    return payload;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-
-  return payload;
 }
 
 function formatApiError(message: string, debug: unknown) {
@@ -440,11 +452,12 @@ function formatApiError(message: string, debug: unknown) {
     .join("\n");
 }
 
-function newMessage(role: ChatMessage["role"], text: string): ChatMessage {
+function newMessage(role: ChatMessage["role"], text: string, thinking?: AgentTraceItem[]): ChatMessage {
   return {
     id: `${role}-${crypto.randomUUID()}`,
     role,
     text,
+    thinking,
   };
 }
 
@@ -456,6 +469,7 @@ function compactReplies(replies: string[]) {
   const compacted = replies
     .map((reply) => reply.trim())
     .filter(Boolean)
+    .filter((reply) => !/^(动作|调试)：/.test(reply))
     .filter((reply, index, all) => index === 0 || reply !== all[index - 1]);
 
   return compacted.join("\n") || "已处理。";
@@ -601,8 +615,17 @@ export function App() {
   const [agentTrace, setAgentTrace] = useState<AgentTraceItem[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(tauriClient);
+  const localTraceRef = useRef<AgentTraceItem[]>([]);
+  const pendingMessageIdRef = useRef<string | null>(null);
+  const [thinkingTicker, setThinkingTicker] = useState(0);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!busy) return;
+    const id = window.setInterval(() => setThinkingTicker((t) => t + 1), 250);
+    return () => window.clearInterval(id);
+  }, [busy]);
   const [agentDriver, setAgentDriver] = useState<AgentDriver>("playwright");
   const [nativeBrowserReady, setNativeBrowserReady] = useState(false);
   const [nativeBrowserError, setNativeBrowserError] = useState("");
@@ -760,6 +783,14 @@ export function App() {
     setBusy(true);
     setMessages((current) => [...current, newMessage("user", text)]);
 
+    let nonTauriPid = "";
+    const updateNonTauriPlaceholder = (updater: (m: ChatMessage) => ChatMessage) => {
+      if (!nonTauriPid) return;
+      setMessages((current) =>
+        current.map((m) => (m.id === nonTauriPid ? updater(m) : m)),
+      );
+    };
+
     try {
       if (tauriClient) {
         const label = nativeWebview.current;
@@ -767,36 +798,125 @@ export function App() {
           throw new Error("浏览器 WebView 还没有准备好。");
         }
 
-        await runAgentLoop(label, text);
-        return;
+        const pid = `assistant-${crypto.randomUUID()}`;
+        const placeholder: ChatMessage = {
+          id: pid,
+          role: "assistant",
+          text: "",
+          thinking: [],
+          _pending: true,
+          _startedAt: Date.now(),
+        };
+        pendingMessageIdRef.current = pid;
+        setMessages((current) => [...current, placeholder]);
 
+        await runAgentLoop(label, text);
+        pendingMessageIdRef.current = null;
+        return;
       }
 
-      const result = await api<{ message: string; thinking?: AgentTraceItem[] }>("/api/chat", {
+      nonTauriPid = `assistant-${crypto.randomUUID()}`;
+      const placeholder: ChatMessage = {
+        id: nonTauriPid,
+        role: "assistant",
+        text: "",
+        thinking: [],
+        _pending: true,
+        _startedAt: Date.now(),
+      };
+      setMessages((current) => [...current, placeholder]);
+
+      const response = await fetch("/api/chat", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
       });
 
-      setAgentTrace(result.thinking || []);
-      setMessages((current) => [
-        ...current,
-        newMessage("assistant", result.message),
-      ]);
+      if (!response.ok) {
+        const errorBody = await response.text();
+        let errorMsg = `请求失败 (${response.status})`;
+        try {
+          const parsed = JSON.parse(errorBody);
+          errorMsg = parsed.error || errorMsg;
+        } catch { /* keep status message */ }
+        throw new Error(errorMsg);
+      }
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEvent = "";
+      const streamDeadline = Date.now() + 120000;
+
+      while (true) {
+        const remaining = streamDeadline - Date.now();
+        if (remaining <= 0) {
+          throw new Error("任务处理超时，请重试。");
+        }
+
+        const readPromise = reader.read();
+        const timeoutPromise = new Promise<{ done: true; value: undefined }>((_, reject) =>
+          setTimeout(() => reject(new Error("任务处理超时，请重试。")), Math.min(remaining, 15000)),
+        );
+        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (currentEvent === "thinking") {
+                updateNonTauriPlaceholder((m) => ({
+                  ...m,
+                  thinking: [...(m.thinking || []), data],
+                }));
+              } else if (currentEvent === "result") {
+                updateNonTauriPlaceholder((m) => ({
+                  ...m,
+                  text: data.message,
+                  _pending: false,
+                }));
+              } else if (currentEvent === "error") {
+                throw new Error(data.error);
+              }
+            } catch (parseErr) {
+              if (parseErr instanceof SyntaxError) continue;
+              throw parseErr;
+            }
+          }
+        }
+      }
     } catch (cause) {
       const message =
         cause instanceof Error
           ? cause.message
           : String(cause || "Agent 执行失败。");
       setError(message);
-      setMessages((current) => [...current, newMessage("assistant", message)]);
+      if (nonTauriPid) {
+        updateNonTauriPlaceholder((m) => ({
+          ...m,
+          text: message,
+          _pending: false,
+        }));
+      } else {
+        setMessages((current) => [...current, newMessage("assistant", message)]);
+      }
     } finally {
       setBusy(false);
+      setAgentTrace([]);
     }
   }
 
   async function runAgentLoop(label: string, text: string) {
     const history: AgentStepHistory[] = [];
     const replies: string[] = [];
+    localTraceRef.current = [];
     let consecutiveFailures = 0;
     let shouldStop = false;
 
@@ -822,6 +942,7 @@ export function App() {
       try {
         plan = await api<BrowserAgentPlan>("/api/agent/plan", {
           method: "POST",
+          timeoutMs: 120000,
           body: JSON.stringify({
             message: text,
             progress: {
@@ -952,20 +1073,41 @@ export function App() {
       }
     }
 
-    setMessages((current) => [
-      ...current,
-      newMessage("assistant", compactReplies(replies)),
-    ]);
+    if (pendingMessageIdRef.current) {
+      setMessages((current) =>
+        current.map((m) =>
+          m.id === pendingMessageIdRef.current
+            ? { ...m, text: compactReplies(replies), _pending: false }
+            : m,
+        ),
+      );
+    } else {
+      setMessages((current) => [
+        ...current,
+        newMessage("assistant", compactReplies(replies), localTraceRef.current),
+      ]);
+    }
   }
 
   function appendTrace(item: Omit<AgentTraceItem, "id">) {
+    const entry = {
+      ...item,
+      id: `${item.phase}-${item.step}-${crypto.randomUUID()}`,
+    };
+    localTraceRef.current.push(entry);
     setAgentTrace((current) => [
       ...current,
-      {
-        ...item,
-        id: `${item.phase}-${item.step}-${crypto.randomUUID()}`,
-      },
+      entry,
     ]);
+    if (pendingMessageIdRef.current) {
+      setMessages((current) =>
+        current.map((m) =>
+          m.id === pendingMessageIdRef.current
+            ? { ...m, thinking: [...(m.thinking || []), entry] }
+            : m,
+        ),
+      );
+    }
   }
 
   function postActionObservationDelay(action: BrowserAgentAction, request: string) {
@@ -1332,12 +1474,34 @@ export function App() {
         )}
 
         <section className="messages">
-          {messages.map((message) => (
-            <article className={`message ${message.role}`} key={message.id}>
-              <span>{message.role === "assistant" ? <Bot /> : "你"}</span>
-              <p>{message.text}</p>
-            </article>
-          ))}
+          {messages.map((message) => {
+            const elapsed = message._startedAt
+              ? Math.round((Date.now() - message._startedAt) / 1000)
+              : 0;
+            const hasThinking = message.thinking && message.thinking.length > 0;
+
+            return (
+              <article className={`message ${message.role}`} key={message.id}>
+                <span>{message.role === "assistant" ? <Bot /> : "你"}</span>
+                <div>
+                  {message.text && <p>{message.text}</p>}
+                  {hasThinking && (
+                    <details className="thinking-fold" open={message._pending}>
+                      <summary>思考过程 ({message.thinking!.length} 步){message._pending ? ` · ${elapsed}s` : ""}</summary>
+                      <ol>
+                        {message.thinking!.map((item) => (
+                          <li className={`is-${item.phase}`} key={item.id}>
+                            <strong>{item.title}</strong>
+                            {item.detail && <p>{item.detail}</p>}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </section>
 
         <div className="quick-actions" aria-label="快捷任务">
@@ -1356,22 +1520,6 @@ export function App() {
             对比本页与竞品页的差异
           </button>
         </div>
-
-        {agentTrace.length > 0 && (
-          <div className="agent-thinking">
-            <header>
-              <strong>思考过程</strong>
-            </header>
-            <ol>
-              {agentTrace.map((item) => (
-                <li className={`is-${item.phase}`} key={item.id}>
-                  <strong>{item.title}</strong>
-                  {item.detail && <p>{item.detail}</p>}
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
 
         <form className="composer" onSubmit={sendMessage}>
           <Sparkles />

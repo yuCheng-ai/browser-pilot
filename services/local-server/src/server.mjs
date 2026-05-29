@@ -203,8 +203,33 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/api/chat") {
       const payload = await readJson(request);
-      const result = await runChatTurn(payload.message);
-      sendJson(response, 200, result);
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      let seq = 0;
+      function sendSSE(event, data) {
+        seq += 1;
+        response.write(`id: ${seq}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      }
+
+      try {
+        const result = await runChatTurn(payload.message, (entry) => {
+          sendSSE("thinking", { id: `${entry.phase}-${seq}-${Date.now()}`, ...entry });
+        });
+        sendSSE("result", { message: result.message, state: result.state });
+      } catch (error) {
+        if (error instanceof RiskBlockedError) {
+          sendSSE("error", { error: error.message, risk: error.risk });
+        } else {
+          sendSSE("error", { error: error instanceof Error ? error.message : "本地服务异常。" });
+        }
+      }
+
+      response.end();
       return;
     }
 
@@ -316,7 +341,21 @@ function buildStateSummary(state) {
   return parts.join(" · ") || "当前页面";
 }
 
-async function runChatTurn(message) {
+function describeActionResults(results) {
+  if (!results || !results.length) return "无操作结果";
+  return results
+    .map((r) => {
+      if (r.error) return `${r.type || "操作"}: ${r.error}`;
+      if (r.type === "navigate") return `导航到 ${r.url || "未知"}`;
+      if (r.type === "click") return `点击 ${r.targetId || "目标"}`;
+      if (r.type === "type") return `输入文本到 ${r.targetId || "目标"}`;
+      if (r.type === "scroll") return `滚动页面 ${r.direction || ""}`;
+      return `${r.type || "操作"}完成`;
+    })
+    .join("; ");
+}
+
+async function runChatTurn(message, onStep) {
   if (!String(message || "").trim()) {
     throw new Error("任务内容不能为空。");
   }
@@ -327,8 +366,15 @@ async function runChatTurn(message) {
   }
 
   const thinkingLog = createThinkingLog();
+  let stepSeq = 0;
+
+  function emit(entry) {
+    thinkingLog.add(entry);
+    if (onStep) onStep(entry);
+  }
+
   const state = await session.snapshot();
-  thinkingLog.observe({ title: "观察页面", detail: buildStateSummary(state) });
+  emit({ phase: "observe", title: "观察页面", detail: buildStateSummary(state) });
 
   const normalizedMessage = String(message).trim();
   const plan = await planBrowserAction({
@@ -339,10 +385,15 @@ async function runChatTurn(message) {
     vision: buildVisionContext({ message: normalizedMessage, state }),
   });
 
-  thinkingLog.plan({
-    model: settings.model,
-    actions: plan.actions || [plan.action],
-    reply: plan.reply,
+  stepSeq += 1;
+  const actionDesc = (plan.actions || [plan.action])
+    .map((a) => (a.type === "none" ? "无操作" : `${a.type} ${a.targetId || a.url || ""}`))
+    .join("; ");
+  emit({
+    phase: "plan",
+    title: `规划下一步 (${settings.model})`,
+    detail: `${actionDesc}\n${plan.reply || ""}`.trim(),
+    meta: { model: settings.model },
   });
 
   const results = await executeSessionBrowserActions(session, plan.actions || [plan.action], {
@@ -350,7 +401,12 @@ async function runChatTurn(message) {
   });
   const result = results.at(-1) || { state };
 
-  thinkingLog.action({ actions: plan.actions || [plan.action], results });
+  stepSeq += 1;
+  emit({
+    phase: "action",
+    title: "执行操作",
+    detail: describeActionResults(results),
+  });
 
   return {
     message: plan.reply,

@@ -688,71 +688,70 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.agent-thinking {
-  max-height: 26vh;
-  overflow: auto;
-  margin: 0 20px;
-  padding: 12px 14px;
-  border: 1px solid #e4eaf1;
-  border-radius: 12px;
-  background: #fafcfe;
+.thinking-timer {
+  font-size: 13px;
+  color: #6366f1;
+  margin: 0 0 4px;
 }
 
-.agent-thinking header {
-  margin-bottom: 8px;
-}
-
-.agent-thinking header strong {
+.thinking-fold summary {
+  cursor: pointer;
   font-size: 12px;
   color: #4a5568;
+  padding: 4px 0;
+  user-select: none;
 }
 
-.agent-thinking ol {
+.thinking-fold summary:hover {
+  color: #1f2937;
+}
+
+.thinking-fold ol {
   display: grid;
-  gap: 8px;
-  margin: 0;
+  gap: 6px;
+  margin: 6px 0 0;
   padding: 0;
   list-style: none;
 }
 
-.agent-thinking li {
+.thinking-fold li {
   display: grid;
-  gap: 4px;
-  padding: 6px 8px;
-  border-radius: 8px;
+  gap: 2px;
+  padding: 5px 8px;
+  border-radius: 7px;
   border-left: 3px solid #e2e8f0;
 }
 
-.agent-thinking li.is-observe {
+.thinking-fold li.is-observe {
   border-left-color: #6366f1;
   background: #eef2ff;
 }
 
-.agent-thinking li.is-plan {
+.thinking-fold li.is-plan {
   border-left-color: #f59e0b;
   background: #fffbeb;
 }
 
-.agent-thinking li.is-action {
+.thinking-fold li.is-action {
   border-left-color: #10b981;
   background: #ecfdf5;
 }
 
-.agent-thinking li.is-error {
+.thinking-fold li.is-error {
   border-left-color: #ef4444;
   background: #fef2f2;
 }
 
-.agent-thinking li strong {
+.thinking-fold li strong {
   font-size: 12px;
   color: #374151;
 }
 
-.agent-thinking li p {
+.thinking-fold li p {
   margin: 0;
   color: #6b7280;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
