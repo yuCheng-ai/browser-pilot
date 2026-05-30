@@ -154,7 +154,9 @@ export function buildIntentRequestBody({ message, model, progress }) {
   };
 }
 
-export function buildRequestBody({ budget, message, model, observations, taskState }) {
+export function buildRequestBody({ budget, message, model, observations, taskState, promptText }) {
+  const userContent = promptText || JSON.stringify({ request: cleanText(message, 800), taskState, observations });
+
   const body = {
     model,
     thinking: { type: "disabled" },
@@ -162,14 +164,22 @@ export function buildRequestBody({ budget, message, model, observations, taskSta
     max_tokens: budget.maxTokens,
     messages: [
       { role: "system", content: plannerPrompt },
-      { role: "user", content: JSON.stringify({ request: cleanText(message, 800), taskState, observations }) },
+      { role: "user", content: userContent },
     ],
   };
 
   return body;
 }
 
-export function buildRepairRequestBody({ message, model, observations, previousPlan, taskState }) {
+export function buildRepairRequestBody({ message, model, observations, previousPlan, taskState, promptText }) {
+  const userContent = promptText || JSON.stringify({
+    request: cleanText(message, 800),
+    previousReply: cleanText(previousPlan?.reply, 320),
+    previousDecision: previousPlan?.decision || null,
+    taskState,
+    observations: repairObservationSlice(observations),
+  });
+
   return {
     model,
     thinking: { type: "disabled" },
@@ -177,16 +187,7 @@ export function buildRepairRequestBody({ message, model, observations, previousP
     max_tokens: repairBudget.maxTokens,
     messages: [
       { role: "system", content: repairPrompt },
-      {
-        role: "user",
-        content: JSON.stringify({
-          request: cleanText(message, 800),
-          previousReply: cleanText(previousPlan?.reply, 320),
-          previousDecision: previousPlan?.decision || null,
-          taskState,
-          observations: repairObservationSlice(observations),
-        }),
-      },
+      { role: "user", content: userContent },
     ],
   };
 }

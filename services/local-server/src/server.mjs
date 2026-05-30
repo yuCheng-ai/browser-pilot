@@ -3,14 +3,9 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  BrowserPilotSession,
-  RiskBlockedError,
-} from "../../../integrations/playwright/src/index.mjs";
-import {
   webViewCdpStatus,
 } from "../../../integrations/playwright/src/webview-cdp.mjs";
 import {
-  executeSessionBrowserActions,
   executeWebViewBrowserActions,
   executeWebViewBrowserAction,
 } from "./browser-tools.mjs";
@@ -18,9 +13,6 @@ import {
   buildAgentObservations,
   planBrowserAction,
 } from "./deepseek-agent.mjs";
-import { buildVisionContext } from "../../../packages/vision-inspector/src/index.mjs";
-import { takeAccessibilitySnapshot } from "./accessibility-snapshot.mjs";
-import { createThinkingLog } from "./thinking-log.mjs";
 import { createExtractor } from "../../../packages/extractor/src/index.mjs";
 
 let extractor = null;
@@ -41,9 +33,7 @@ async function getExtractor() {
 const serviceDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(serviceDir, "../../..");
 const settingsPath = join(rootDir, "storage", "sqlite", "settings.json");
-const profileDir = join(rootDir, "storage", "profiles", "default");
 const port = Number(process.env.BROWSER_PILOT_PORT || 4178);
-const session = new BrowserPilotSession({ profileDir });
 
 const server = createServer(async (request, response) => {
   try {
@@ -68,50 +58,6 @@ const server = createServer(async (request, response) => {
       const payload = await readJson(request);
       const settings = await saveSettings(payload);
       sendJson(response, 200, publicSettings(settings));
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/browser/state") {
-      sendJson(response, 200, await session.snapshot());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/browser/navigate") {
-      const payload = await readJson(request);
-      sendJson(response, 200, await session.navigate(payload.url));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/browser/refresh") {
-      sendJson(response, 200, await session.refresh());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/browser/click") {
-      const payload = await readJson(request);
-      const result = await session.clickTarget(payload.targetId, {
-        confirmRisk: Boolean(payload.confirmRisk),
-      });
-      sendJson(response, 200, result.state);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/browser/pointer") {
-      const payload = await readJson(request);
-      const state = await session.pointerInput(payload);
-      sendJson(response, 200, state || { ok: true });
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/browser/show") {
-      sendJson(response, 200, await session.showVisibleBrowser());
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/browser/accessibility-snapshot") {
-      const page = await session.ensurePage();
-      const snapshot = await takeAccessibilitySnapshot(page);
-      sendJson(response, 200, snapshot);
       return;
     }
 
@@ -201,50 +147,10 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/chat") {
-      const payload = await readJson(request);
-      response.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-
-      let seq = 0;
-      function sendSSE(event, data) {
-        seq += 1;
-        response.write(`id: ${seq}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      }
-
-      try {
-        const result = await runChatTurn(payload.message, (entry) => {
-          sendSSE("thinking", { id: `${entry.phase}-${seq}-${Date.now()}`, ...entry });
-        });
-        sendSSE("result", { message: result.message, state: result.state });
-      } catch (error) {
-        if (error instanceof RiskBlockedError) {
-          sendSSE("error", { error: error.message, risk: error.risk });
-        } else {
-          sendSSE("error", { error: error instanceof Error ? error.message : "本地服务异常。" });
-        }
-      }
-
-      response.end();
-      return;
-    }
-
     sendJson(response, 404, {
       error: "接口不存在。",
     });
   } catch (error) {
-    if (error instanceof RiskBlockedError) {
-      sendJson(response, 409, {
-        error: error.message,
-        risk: error.risk,
-      });
-      return;
-    }
-
     sendJson(response, 500, {
       error: error instanceof Error ? error.message : "本地服务异常。",
       debug: error && typeof error === "object" ? error.debug || null : null,
@@ -273,10 +179,7 @@ process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 function shutdown(signal) {
   console.log(`BrowserPilot local server received ${signal}, shutting down.`);
-  server.close(async () => {
-    await session.close?.();
-    process.exit(0);
-  });
+  server.close(() => process.exit(0));
 
   setTimeout(() => process.exit(0), 2500).unref();
 }
@@ -290,7 +193,6 @@ function buildExternalBrowserObservations(payload) {
     observation: payload?.observation,
     progress: payload?.progress,
     state,
-    vision: buildVisionContext({ message, state }),
   });
 
   return {
@@ -316,7 +218,6 @@ async function planExternalBrowserTurn(payload) {
     message,
     observation: payload?.observation,
     state,
-    vision: buildVisionContext({ message, state }),
     progress: payload?.progress,
   });
 
@@ -331,90 +232,6 @@ async function planExternalBrowserTurn(payload) {
     success: typeof plan.success === "boolean" ? plan.success : plan.decision?.success ?? null,
     decision: plan.decision || null,
     debug: plan.debug || null,
-  };
-}
-
-function buildStateSummary(state) {
-  const parts = [];
-  if (state?.url) parts.push(state.url);
-  if (state?.title) parts.push(state.title);
-  return parts.join(" · ") || "当前页面";
-}
-
-function describeActionResults(results) {
-  if (!results || !results.length) return "无操作结果";
-  return results
-    .map((r) => {
-      if (r.error) return `${r.type || "操作"}: ${r.error}`;
-      if (r.type === "navigate") return `导航到 ${r.url || "未知"}`;
-      if (r.type === "click") return `点击 ${r.targetId || "目标"}`;
-      if (r.type === "type") return `输入文本到 ${r.targetId || "目标"}`;
-      if (r.type === "scroll") return `滚动页面 ${r.direction || ""}`;
-      return `${r.type || "操作"}完成`;
-    })
-    .join("; ");
-}
-
-async function runChatTurn(message, onStep) {
-  if (!String(message || "").trim()) {
-    throw new Error("任务内容不能为空。");
-  }
-
-  const settings = await loadSettings();
-  if (!settings.deepSeekApiKey) {
-    throw new Error("先在设置中保存 DeepSeek API Key。");
-  }
-
-  const thinkingLog = createThinkingLog();
-  let stepSeq = 0;
-
-  function emit(entry) {
-    thinkingLog.add(entry);
-    if (onStep) onStep(entry);
-  }
-
-  const state = await session.snapshot();
-  emit({ phase: "observe", title: "观察页面", detail: buildStateSummary(state) });
-
-  const normalizedMessage = String(message).trim();
-  const plan = await planBrowserAction({
-    apiKey: settings.deepSeekApiKey,
-    model: settings.model,
-    message: normalizedMessage,
-    state,
-    vision: buildVisionContext({ message: normalizedMessage, state }),
-  });
-
-  stepSeq += 1;
-  const actionDesc = (plan.actions || [plan.action])
-    .map((a) => (a.type === "none" ? "无操作" : `${a.type} ${a.targetId || a.url || ""}`))
-    .join("; ");
-  emit({
-    phase: "plan",
-    title: `规划下一步 (${settings.model})`,
-    detail: `${actionDesc}\n${plan.reply || ""}`.trim(),
-    meta: { model: settings.model },
-  });
-
-  const results = await executeSessionBrowserActions(session, plan.actions || [plan.action], {
-    maxActions: 2,
-  });
-  const result = results.at(-1) || { state };
-
-  stepSeq += 1;
-  emit({
-    phase: "action",
-    title: "执行操作",
-    detail: describeActionResults(results),
-  });
-
-  return {
-    message: plan.reply,
-    actions: plan.actions || [plan.action],
-    results,
-    result,
-    state: result.state || state,
-    thinking: thinkingLog.toArray(),
   };
 }
 

@@ -6,7 +6,7 @@ import { hasScrollIntent, shouldUseIntentRouter } from "./agent/intent-lexicon.m
 
 import { buildLoopJudgeState, buildTaskState, deterministicSafetyPlan } from "./agent/progress.mjs";
 
-import { buildAgentObservations, summarizeDecision, summarizeObservations } from "./agent/observations.mjs";
+import { buildAgentObservations, summarizeDecision, summarizeObservations, toPromptText } from "./agent/observations.mjs";
 
 import { byteLength, cleanText } from "./agent/text.mjs";
 import { createThinkingLog } from "./thinking-log.mjs";
@@ -17,7 +17,7 @@ export { buildAgentObservations } from "./agent/observations.mjs";
 
 
 
-export async function planBrowserAction({ apiKey, model, message, observation, state, vision, progress, thinkingLog }) {
+export async function planBrowserAction({ apiKey, model, message, observation, state, progress, thinkingLog }) {
   const log = thinkingLog || createThinkingLog();
   const safety = deterministicSafetyPlan({ message, progress });
   if (safety) {
@@ -139,21 +139,22 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
         observation,
         progress,
         state,
-        vision,
       });
+      const promptText = toPromptText({ message, taskState, observations });
       const body = buildRequestBody({
         budget,
         message,
         model: candidateModel,
         observations,
         taskState,
+        promptText,
       });
       const attempt = {
         stage: "page",
         model: candidateModel,
         budget: budget.name,
         timeoutMs: budget.timeoutMs,
-        requestBytes: byteLength(JSON.stringify(body)),
+        requestBytes: byteLength(promptText),
         observation: summarizeObservations(observations),
         startedAt: new Date().toISOString(),
       };
@@ -218,14 +219,16 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
           const repairStarted = Date.now();
 
           try {
+            const repairPromptText = buildRepairPromptText({ message, observations, plan, taskState });
             const repairBody = buildRepairRequestBody({
               message,
               model: candidateModel,
               observations,
               previousPlan: plan,
               taskState,
+              promptText: repairPromptText,
             });
-            repairAttempt.requestBytes = byteLength(JSON.stringify(repairBody));
+            repairAttempt.requestBytes = byteLength(repairPromptText);
             const repairedPlan = await requestPlan({
               apiKey,
               budget: repairBudget,
@@ -497,4 +500,20 @@ function scrollActionFromPageState(state) {
     direction: "down",
     amount: 650,
   });
+}
+
+function buildRepairPromptText({ message, observations, plan, taskState }) {
+  const lines = [];
+  lines.push(`┌─ Repair Mode`);
+  lines.push(`├─ Previous reply returned no executable action. Choose a generic action from candidates.`);
+  lines.push(`├─ Previous reply: ${cleanText(plan?.reply, 200)}`);
+  if (plan?.nextGoal || plan?.decision?.nextGoal) {
+    lines.push(`├─ Previous nextGoal: ${cleanText(plan?.nextGoal || plan?.decision?.nextGoal, 200)}`);
+  }
+  lines.push("");
+
+  const mainPrompt = toPromptText({ message, taskState, observations });
+  lines.push(mainPrompt);
+
+  return lines.join("\n");
 }

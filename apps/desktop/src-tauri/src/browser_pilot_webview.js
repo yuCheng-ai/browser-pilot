@@ -816,26 +816,62 @@
     return null;
   }
 
+  function walkInteractiveElements(root, options = {}) {
+    const {
+      limit = 180,
+      deadlineMs = 0,
+      viewportCull = true,
+      bufRatio = { top: 0.5, bottom: 0.5, left: 0.3, right: 0.3 },
+    } = options;
+
+    const collected = [];
+    const deadline = deadlineMs ? performance.now() + deadlineMs : 0;
+    const bufTop = viewportCull ? innerHeight * bufRatio.top : 1e6;
+    const bufBottom = viewportCull ? innerHeight * bufRatio.bottom : 1e6;
+    const bufLeft = viewportCull ? innerWidth * bufRatio.left : 1e6;
+    const bufRight = viewportCull ? innerWidth * bufRatio.right : 1e6;
+    let checkCount = 0;
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+      acceptNode(element) {
+        checkCount++;
+        if ((checkCount & 63) === 0) {
+          if (collected.length >= limit) return NodeFilter.FILTER_REJECT;
+          if (deadline && performance.now() > deadline) return NodeFilter.FILTER_REJECT;
+        }
+
+        const rect = element.getBoundingClientRect();
+
+        if (rect.width < 4 || rect.height < 4) {
+          return NodeFilter.FILTER_SKIP;
+        }
+
+        if (
+          rect.bottom < -bufTop ||
+          rect.top > innerHeight + bufBottom ||
+          rect.right < -bufLeft ||
+          rect.left > innerWidth + bufRight
+        ) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        if (isCandidateElement(element)) {
+          collected.push(element);
+        }
+
+        return NodeFilter.FILTER_SKIP;
+      },
+    });
+
+    while (walker.nextNode()) { /* traversal driven by acceptNode */ }
+    return collected;
+  }
+
   function candidateElements() {
-    const elements = new Set([
-      ...document.querySelectorAll(interactiveSelector),
-      ...Array.from(document.querySelectorAll("a,button,div,span,li,img,svg")).filter(
-        (element) => getComputedStyle(element).cursor === "pointer",
-      ),
-      ...Array.from(document.querySelectorAll("span,div,p")).filter(isShortTextCandidate),
-    ]);
-
-    return Array.from(elements).filter((element) => {
-      const rect = element.getBoundingClientRect();
-      const tag = element.tagName.toLowerCase();
-      const style = getComputedStyle(element);
-      const likelyInteractive =
-        isSemanticInteractive(element, tag) ||
-        hasInlineHandler(element) ||
-        isShortTextCandidate(element) ||
-        (style.cursor === "pointer" && rect.width >= 12 && rect.height >= 12);
-
-      return likelyInteractive && isVisible(element, rect);
+    return walkInteractiveElements(document.body, {
+      limit: 180,
+      deadlineMs: 8000,
+      viewportCull: true,
     });
   }
 
@@ -1279,40 +1315,41 @@
   }
 
   function candidateElementsFromRoots(roots) {
-    const elements = new Set();
+    const elements = [];
+    const seen = new Set();
     const active = document.activeElement instanceof Element ? document.activeElement : null;
 
+    function addUnique(element) {
+      if (element && !seen.has(element)) {
+        seen.add(element);
+        elements.push(element);
+      }
+    }
+
     if (active) {
-      elements.add(active);
+      addUnique(active);
       if (active.parentElement) {
         roots.push(active.parentElement);
       }
     }
 
     roots.slice(0, 16).forEach((root) => {
-      const element = root instanceof Element ? root : document.body;
-      if (!element) {
-        return;
-      }
+      const element = root instanceof Element ? root : null;
+      if (!element) return;
 
       if (isCandidateElement(element)) {
-        elements.add(element);
+        addUnique(element);
       }
 
-      element.querySelectorAll?.(interactiveSelector).forEach((candidate) => {
-        if (isCandidateElement(candidate)) {
-          elements.add(candidate);
-        }
+      const found = walkInteractiveElements(element, {
+        limit: 30,
+        deadlineMs: 2000,
+        viewportCull: false,
       });
-
-      element.querySelectorAll?.("a,button,div,span,p,li,img,svg").forEach((candidate) => {
-        if (isCandidateElement(candidate)) {
-          elements.add(candidate);
-        }
-      });
+      found.forEach(addUnique);
     });
 
-    return Array.from(elements).slice(0, 80);
+    return elements.slice(0, 80);
   }
 
   function ensureTargetId(element) {

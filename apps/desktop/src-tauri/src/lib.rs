@@ -573,7 +573,7 @@ async fn eval_json(webview: &Webview, script: String) -> Result<serde_json::Valu
 
   let raw = tauri::async_runtime::spawn_blocking(move || {
     receiver
-      .recv_timeout(Duration::from_secs(5))
+      .recv_timeout(Duration::from_secs(12))
       .map_err(|_| "reading DOM timed out".to_string())
   })
   .await

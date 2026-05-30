@@ -15,7 +15,6 @@ export function buildAgentObservations({
   observation,
   progress,
   state,
-  vision,
 }) {
   const resolvedBudget = resolveObservationBudget({ budget, budgetName });
   const mode = inferObservationMode({ message, progress });
@@ -32,7 +31,7 @@ export function buildAgentObservations({
   const inputs = normalizeInputs(slice.inputs, resolvedBudget, pageState.activeTargetId);
   const targets = normalizeTargets(slice.targets, resolvedBudget, pageState.activeTargetId);
   const relations = normalizeRelations(slice.relations, resolvedBudget);
-  const normalizedVision = normalizeVision({ ...vision, items: slice.visuals }, resolvedBudget);
+  const normalizedVision = normalizeVisualMeta(slice.visuals, resolvedBudget);
   const focusedInput = inputs.find((input) => input.active) || null;
   const diff = buildActionableDiffObservation({
     message,
@@ -74,9 +73,9 @@ export function buildAgentObservations({
       actionableDiff: diff,
       focusedTargetContext: focused,
       visionOnDemand: {
-        available: normalizedVision.items.length > 0,
-        items: normalizedVision.items,
-        summary: normalizedVision.summary || null,
+        available: normalizedVision.length > 0,
+        items: normalizedVision,
+        summary: null,
       },
     },
     focusedTargetId: pageState.activeTargetId,
@@ -146,7 +145,7 @@ export function buildAgentObservations({
       selectedTargets: targets.length,
       selectedInputs: inputs.length,
       selectedRelations: relations.length,
-      selectedVisuals: normalizedVision.items.length,
+      selectedVisuals: normalizedVision.length,
       totalRegions: Array.isArray(state?.regions) ? state.regions.length : 0,
       totalBlocks: Array.isArray(state?.blocks) ? state.blocks.length : 0,
       totalTargets: Array.isArray(state?.targets) ? state.targets.length : 0,
@@ -171,8 +170,8 @@ export function summarizeObservations(observations) {
     targets: Array.isArray(observations?.targets) ? observations.targets.length : 0,
     inputs: Array.isArray(observations?.inputs) ? observations.inputs.length : 0,
     relations: Array.isArray(observations?.relations) ? observations.relations.length : 0,
-    visuals: Array.isArray(observations?.vision?.items)
-      ? observations.vision.items.length
+    visuals: Array.isArray(observations?.vision)
+      ? observations.vision.length
       : 0,
     totalRegions: Number(observations?.summary?.totalRegions) || 0,
     totalBlocks: Number(observations?.summary?.totalBlocks) || 0,
@@ -884,46 +883,21 @@ function normalizeSemantics(semantics) {
   };
 }
 
-function normalizeContent(content, budget) {
-  if (!Array.isArray(content)) {
+function normalizeVisualMeta(visuals, budget) {
+  if (!Array.isArray(visuals)) {
     return [];
   }
 
-  return content.slice(0, budget.contentLimit).map((item) => ({
+  return visuals.slice(0, budget.visualLimit).map((item) => ({
     id: cleanText(item?.id, 40),
-    role: cleanText(item?.role || "content", 40),
-    text: cleanText(item?.text, budget.contentTextLimit),
+    kind: cleanText(item?.kind || "visual", 40),
+    alt: cleanText(item?.alt, 100),
+    title: cleanText(item?.title, 100),
+    nearbyText: cleanText(item?.nearbyText, budget.visualTextLimit),
     targetIds: normalizeTargetIds(item?.targetIds),
+    regionId: cleanText(item?.regionId, 40),
     box: normalizeBoxForPrompt(item?.box),
   }));
-}
-
-function normalizeVision(vision, budget) {
-  if (!vision || typeof vision !== "object") {
-    return {
-      required: false,
-      supported: false,
-      items: [],
-    };
-  }
-
-  return {
-    required: Boolean(vision.required),
-    supported: Boolean(vision.supported),
-    reason: cleanText(vision.reason, 100),
-    items: Array.isArray(vision.items)
-      ? vision.items.slice(0, budget.visualLimit).map((item) => ({
-          id: cleanText(item?.id, 40),
-          kind: cleanText(item?.kind || "visual", 40),
-          alt: cleanText(item?.alt, 100),
-          title: cleanText(item?.title, 100),
-          nearbyText: cleanText(item?.nearbyText, budget.visualTextLimit),
-          targetIds: normalizeTargetIds(item?.targetIds),
-          regionId: cleanText(item?.regionId, 40),
-          box: normalizeBoxForPrompt(item?.box),
-        }))
-      : [],
-  };
 }
 
 function normalizeBoxForPrompt(box) {
@@ -964,4 +938,255 @@ export function summarizeDecision(plan) {
     done: Boolean(plan?.decision?.done || plan?.action?.done),
     action: normalizeAction(plan?.action),
   };
+}
+
+export function toPromptText({ message, taskState, observations }) {
+  const lines = [];
+  const diff = observations?.diff;
+  const focused = observations?.focused;
+  const layers = observations?.layers;
+  const full = layers?.fullSnapshot || {};
+  const page = full.page || observations?.page || {};
+  const pageState = page.state || {};
+  const regions = observations?.regions || full.regions || [];
+  const blocks = observations?.blocks || full.blocks || [];
+  const targets = observations?.targets || full.targets || [];
+  const inputs = observations?.inputs || full.inputs || [];
+  const relations = observations?.relations || full.relations || [];
+
+  // ── Task ──
+  const goal = cleanText(message || taskState?.goal, 300);
+  if (goal) {
+    lines.push(`┌─ Task`);
+    lines.push(`├─ ${goal}`);
+  }
+
+  // ── Page State ──
+  if (taskState && typeof taskState === "object") {
+    const doneFlags = [];
+    if (taskState.latestSubmittedText) doneFlags.push("submitted");
+    if (taskState.nearCompletion) doneFlags.push("nearCompletion");
+    if (taskState.shouldChangeStrategy) doneFlags.push("changeStrategy");
+    if (taskState.loopWarning) doneFlags.push(`loopWarn: ${cleanText(taskState.loopWarning, 80)}`);
+    lines.push(`┌─ Page State`);
+    lines.push(`├─ step ${taskState.step || 1}/${taskState.maxSteps || 8}, failures ${taskState.failureCount || 0}`);
+    const completed = Array.isArray(taskState.completedSteps) && taskState.completedSteps.length
+      ? taskState.completedSteps.join(", ")
+      : "";
+    if (completed) lines.push(`├─ completed: ${completed}`);
+    if (doneFlags.length) lines.push(`├─ flags: ${doneFlags.join(", ")}`);
+  }
+
+  // ── History ──
+  const history = taskState?.history || [];
+  if (Array.isArray(history) && history.length) {
+    lines.push(`┌─ History`);
+    history.slice(-5).forEach((item, index) => {
+      const label = [
+        item.action || "",
+        item.targetId ? `[${cleanText(item.targetId, 24)}]` : "",
+        item.target ? `"${cleanText(item.target, 80)}"` : "",
+        item.text ? `"${cleanText(item.text, 80)}"` : "",
+        item.submitted ? "submitted" : "",
+        item.ok === false ? "FAILED" : "",
+        item.changed ? "" : "nochange",
+      ].filter(Boolean).join(" ");
+      lines.push(`├─ ${index + 1}. ${label}`);
+    });
+  }
+
+  // ── Observations ──
+  lines.push(`┌─ Observations`);
+  const kind = diff ? "patch" : "full";
+  const mode = observations?.mode || observations?.focused?.intent || "";
+
+  // Page header
+  const title = cleanText(page.title, 120);
+  const url = cleanText(page.url, 300);
+  const scroll = pageState.scroll
+    ? `scroll=${pageState.scroll.y || 0}/${pageState.scroll.maxY || 0}`
+    : "";
+  const modal = pageState.hasModal ? "modal=yes" : "";
+  const overlay = pageState.hasOverlay ? "overlay=yes" : "";
+  const ready = pageState.readyState ? `ready=${pageState.readyState}` : "";
+  const stateBits = [ready, scroll, modal, overlay].filter(Boolean).join(", ");
+  const intentInfo = [kind, mode].filter(Boolean).join(", ");
+
+  lines.push(`├─ Page: ${title}`);
+  lines.push(`├─ URL: ${url}`);
+  if (stateBits) lines.push(`├─ State: ${stateBits}`);
+  if (intentInfo) lines.push(`├─ Mode: ${intentInfo}`);
+
+  // Diff summary (if patch)
+  if (diff) {
+    const d = diff.summary || {};
+    const diffBits = [];
+    if (d.activeChanged) diffBits.push("activeChanged");
+    if (d.scrollChanged) diffBits.push("scrollChanged");
+    if (d.newEditableInputs) diffBits.push(`inputs+${d.newEditableInputs}`);
+    if (d.actionButtons) diffBits.push(`buttons=${d.actionButtons}`);
+    if (d.targetsAdded) diffBits.push(`targets+${d.targetsAdded}`);
+    if (d.targetsUpdated) diffBits.push(`targets~${d.targetsUpdated}`);
+    if (d.targetsDisappeared) diffBits.push(`targets-${d.targetsDisappeared}`);
+    if (diffBits.length) lines.push(`├─ Changes: ${diffBits.join(", ")}`);
+  }
+
+  // Regions
+  const totalRegions = (observations?.summary?.totalRegions) || regions.length;
+  if (regions.length) {
+    lines.push(`├─ Regions (${regions.length}/${totalRegions} shown)`);
+    regions.forEach((region) => {
+      const id = cleanText(region.id, 20);
+      const role = cleanText(region.role || "section", 20);
+      const text = cleanText(region.text || region.label || "", 120);
+      const targetIds = normalizeTargetIds(region.targetIds).slice(0, 6).join(",");
+      const ref = targetIds ? ` → [${targetIds}]` : "";
+      lines.push(`│  [${id}] ${role}: "${text}"${ref}`);
+    });
+  }
+
+  // Content blocks
+  const totalBlocks = (observations?.summary?.totalBlocks) || blocks.length;
+  if (blocks.length) {
+    lines.push(`├─ Content (${blocks.length}/${totalBlocks} shown)`);
+    blocks.forEach((block) => {
+      const id = cleanText(block.id, 20);
+      const kind = cleanText(block.kind || block.role || "content", 16);
+      const text = cleanText(block.text, 110);
+      const targetIds = normalizeTargetIds(block.targetIds).slice(0, 6).join(",");
+      const ref = targetIds ? ` → [${targetIds}]` : "";
+      lines.push(`│  [${id}] ${kind}: "${text}"${ref}`);
+    });
+  }
+
+  // Interactive elements (targets)
+  const totalTargets = (observations?.summary?.totalTargets) || targets.length;
+  if (targets.length) {
+    lines.push(`├─ Interactive (${targets.length}/${totalTargets} shown)`);
+    targets.forEach((target) => {
+      const tag = targetTypeTag(target);
+      const id = cleanText(target.id, 20);
+      const label = cleanText(target.label || target.text || target.placeholder, 80);
+      const context = cleanText(target.context, 60);
+      const type = cleanText(target.type || target.tag, 20);
+      const regionId = cleanShortId(target.regionId);
+      const blockId = cleanShortId(target.blockId);
+      const spatial = [regionId, blockId].filter(Boolean).join(",");
+      const contextPart = context && context !== label ? ` — ${context}` : "";
+      const spatialPart = spatial ? ` (${spatial})` : "";
+      const risk = target.risk === "high" || target.risk === "medium" ? ` risk:${target.risk}` : "";
+      const active = target.active ? " ← active" : "";
+      lines.push(`│  ${tag} [${id}] "${label}" ${type}${spatialPart}${contextPart}${risk}${active}`);
+    });
+  }
+
+  // Inputs
+  const totalInputs = (observations?.summary?.totalInputs) || inputs.length;
+  if (inputs.length) {
+    lines.push(`├─ Inputs (${inputs.length}/${totalInputs} shown)`);
+    inputs.forEach((input) => {
+      const targetId = cleanText(input.targetId, 20);
+      const name = cleanText(input.name || input.placeholder || input.inputType, 60);
+      const type = cleanText(input.inputType, 20);
+      const context = cleanText(input.context, 60);
+      const contextPart = context && context !== name ? ` — ${context}` : "";
+      const active = input.active ? " ← active" : "";
+      const multiline = input.multiline ? " multiline" : "";
+      lines.push(`│  → [${targetId}] ${type} "${name}"${contextPart}${active}${multiline}`);
+    });
+  }
+
+  // Relations
+  const totalRelations = (observations?.summary?.totalRelations) || relations.length;
+  if (relations.length) {
+    lines.push(`├─ Relations (${relations.length}/${totalRelations} shown)`);
+    // Group relations by type and from
+    const contains = new Map();
+    const belongsTo = new Map();
+    relations.forEach((rel) => {
+      const type = cleanText(rel.type, 20);
+      const from = cleanShortId(rel.from);
+      const to = cleanShortId(rel.to);
+      if (type === "contains" || type === "belongs_to") {
+        const map = type === "contains" ? contains : belongsTo;
+        if (!map.has(from)) map.set(from, []);
+        map.get(from).push(to);
+      }
+    });
+    const allMaps = [
+      { label: "contains", map: contains },
+      { label: "belongs_to", map: belongsTo },
+    ];
+    allMaps.forEach(({ label, map }) => {
+      map.forEach((toIds, from) => {
+        const toList = uniqueStrings(toIds).slice(0, 10).join(",");
+        lines.push(`│  [${from}] ${label} [${toList}]`);
+      });
+    });
+  }
+
+  // Visuals
+  const visuals = observations?.vision || full.visuals || [];
+  const totalVisuals = (observations?.summary?.totalVisuals) || visuals.length;
+  if (visuals.length) {
+    lines.push(`├─ Visuals (${visuals.length}/${totalVisuals} shown)`);
+    visuals.forEach((visual) => {
+      const id = cleanText(visual.id, 20);
+      const kind = cleanText(visual.kind || "visual", 16);
+      const alt = cleanText(visual.alt || visual.title || visual.ariaLabel, 80);
+      const nearby = cleanText(visual.nearbyText, 80);
+      const nearbyPart = nearby ? ` near: "${nearby}"` : "";
+      lines.push(`│  [${id}] ${kind}: "${alt}"${nearbyPart}`);
+    });
+  }
+
+  // Focused context
+  if (focused) {
+    const recommended = focused.recommendedActions || [];
+    if (recommended.length) {
+      const actions = recommended.slice(0, 6).map((item) => {
+        const actionType = item.action || item.type || "";
+        const targetId = cleanText(item.targetId, 20);
+        if (actionType === "scroll") {
+          return `scroll ${item.direction || "down"} ${item.amount || ""}`;
+        }
+        return `${actionType}${targetId ? ` [${targetId}]` : ""}`;
+      }).join(", ");
+      lines.push(`├─ Recommended: ${actions}`);
+    }
+  }
+
+  // If diff has candidate actions, show them
+  if (diff?.candidateActions?.length) {
+    const candidates = diff.candidateActions.slice(0, 4).map((item) => {
+      const actionType = item.action || item.type || "";
+      const targetId = cleanText(item.targetId, 20);
+      return `${actionType}${targetId ? ` [${targetId}]` : ""}`;
+    }).join(", ");
+    if (candidates) lines.push(`├─ Diff candidates: ${candidates}`);
+  }
+
+  return lines.join("\n");
+}
+
+function targetTypeTag(target) {
+  const interaction = target?.interaction || {};
+  if (interaction.editable) return "[Inp]";
+  if (interaction.selectable) return "[Sel]";
+  const tag = (target?.tag || "").toLowerCase();
+  const type = (target?.type || "").toLowerCase();
+  if (tag === "a" || type === "link") return "[Lnk]";
+  if (tag === "img" || tag === "svg" || type === "visual") return "[Img]";
+  if (interaction.clickable) return "[Btn]";
+  if (interaction.scrollable) return "[Scr]";
+  return "[Btn]";
+}
+
+function cleanShortId(value) {
+  const cleaned = cleanText(value, 20);
+  if (!cleaned) return "";
+  return cleaned.replace(/^(region|content|target|input|visual)-/, (_, prefix) => {
+    const map = { region: "r", content: "c", target: "t", input: "inp", visual: "v" };
+    return map[prefix] || prefix;
+  });
 }

@@ -13,20 +13,31 @@ export const plannerPrompt =
   "{\"reply\":\"Chinese reply\",\"evaluationPreviousGoal\":\"what happened last step\",\"memory\":\"task memory\",\"nextGoal\":\"next browser goal\",\"done\":false,\"actions\":[{type}]}. " +
   "Legacy {\"reply\":\"Chinese reply\",\"action\":{type}} is also accepted, but actions[] is preferred. " +
   "Actions: none, navigate{url}, click{targetId}, type{targetId,text,submit}, scroll{direction,targetId?,amount?}. " +
-  "You receive taskState and layered observations from BrowserPilot tools, not raw DOM. Execute one planning step with at most two actions. " +
+  "You receive a structured text observation document, not raw DOM. Execute one planning step with at most two actions. " +
   "This is a browser-general agent; do not assume any site-specific schema. " +
-  "Observation layers: fullSnapshot for page slices, actionableDiff for changes after the last action, focusedTargetContext for task-relevant candidates, visionOnDemand for optional visual hints. " +
-  "Available affordances are listed in observations.layers, observations.focused, observations.views, observations.blocks, observations.targets, observations.inputs, and observations.diff. " +
-  "focusedTargetContext is the task-relevant retrieval shortlist; prefer its recommendedActions and candidates over broad page lists when they fit the goal. " +
+  "Observation format (text document with ┌─ sections): " +
+  "┌─ Task: user request. " +
+  "┌─ Page State: step/maxSteps, failures, completed steps, flags. " +
+  "┌─ History: recent actions with target, text, changed/nochange status. " +
+  "┌─ Observations: mode (full/patch, intent mode), Page info (title, URL, ready/scroll/modal state), Changes (for patches). " +
+  "├─ Regions (N/M shown): [rN] role: \"text\" → target IDs. Layout landmarks (viewport, navigation, main, etc.). " +
+  "├─ Content (N/M shown): [cN] kind: \"text\" → target IDs. Semantic content blocks (card, heading, paragraph). " +
+  "├─ Interactive (N/M shown): [Btn]/[Lnk]/[Inp]/[Sel] [tN] \"label\" type (region,block) context risk:level ← active. " +
+  "  [Btn]=clickable button, [Lnk]=link, [Inp]=editable input, [Sel]=select. " +
+  "├─ Inputs (N/M shown): → [tN] type \"name\" context ← active multiline. " +
+  "├─ Relations (N/M shown): [rN] contains [cN,...]; [cN] belongs_to [tN,...]. " +
+  "├─ Recommended: suggested actions from focused retrieval. " +
+  "IMPORTANT: Use [tN] target IDs from Interactive/Inputs sections for click/type actions. " +
+  "Content blocks show related target IDs with → [tN,...] hints. Use recommendedActions over broad lists when they fit the goal. " +
   "If the next natural operation is focus then type into the same known editable target, return both click and type actions in order. " +
   "If taskState.recentFailures is non-empty, recover by choosing a different visible target, scrolling, or stopping with a clear reason when recovery is unsafe. " +
   "Decide from the user's original request, taskState, history, and observations whether to continue or stop. " +
   "Set done true only when the user's requested browser task is complete, impossible, unsafe, or requires user confirmation. " +
   "Return action none only when done is true or no browser action can safely advance the task. " +
   "If your reply says the task still needs a next browser step, action must not be none. " +
-  "When observations.diff.candidateActions is non-empty, treat it as the generic recommended next-action shortlist. " +
-  "If a required control/input is not visible but more page content can be revealed, use scroll instead of none. " +
-  "Never invent target ids; use only ids from observations.targets, observations.inputs.targetId, or observations.blocks.targetIds.";
+  "When observations show candidate actions or recommended actions, treat them as the generic recommended next-action shortlist. " +
+  "If a required control/input is not visible but more page content can be revealed (scroll y < maxY), use scroll instead of none. " +
+  "Never invent target ids; use only ids from the Interactive section ([tN]) or Inputs section target references.";
 
 export const repairPrompt =
   "BrowserPilot action repair. Return JSON only. Preferred schema: " +
@@ -56,34 +67,34 @@ export const intentBudget = {
 export const budgets = [
   {
     name: "normal",
-    contentLimit: 4,
+    contentLimit: 5,
     contentTextLimit: 120,
     historyLimit: 5,
     maxTokens: 420,
     targetContextLimit: 30,
-    targetLimit: 8,
+    targetLimit: 12,
     inputLimit: 6,
-    regionLimit: 3,
-    relationLimit: 0,
+    regionLimit: 4,
+    relationLimit: 4,
     timeoutMs: 15000,
-    visualLimit: 0,
-    visualTextLimit: 0,
+    visualLimit: 2,
+    visualTextLimit: 80,
     jsonMode: true,
   },
   {
     name: "compact",
-    contentLimit: 3,
+    contentLimit: 4,
     contentTextLimit: 90,
     historyLimit: 3,
     maxTokens: 280,
     targetContextLimit: 24,
-    targetLimit: 6,
+    targetLimit: 8,
     inputLimit: 4,
-    regionLimit: 2,
-    relationLimit: 0,
+    regionLimit: 3,
+    relationLimit: 2,
     timeoutMs: 12000,
-    visualLimit: 0,
-    visualTextLimit: 0,
+    visualLimit: 1,
+    visualTextLimit: 60,
     jsonMode: true,
   },
   {

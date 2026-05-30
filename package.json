@@ -18,7 +18,6 @@
     "desktop:build": "npm run tauri --workspace @browser-pilot/desktop -- build",
     "stop:dev": "node scripts/kill-port.mjs 4178 5173",
     "stop:server": "node scripts/kill-port.mjs 4178",
-    "setup:browsers": "playwright install chromium",
     "build": "npm run build --workspaces --if-present",
     "check": "npm run check --workspaces --if-present"
   },

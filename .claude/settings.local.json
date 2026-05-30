@@ -1,7 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git *)"
+      "Bash(git *)",
+      "WebSearch",
+      "Bash(node --check packages/dom-inspector/src/index.mjs)",
+      "Bash(node --check integrations/playwright/src/index.mjs)",
+      "Bash(node --check services/local-server/src/agent/observations.mjs)",
+      "Bash(node --check services/local-server/src/accessibility-snapshot.mjs)",
+      "Bash(node --check services/local-server/src/agent/config.mjs)",
+      "Bash(node --check services/local-server/src/server.mjs)",
+      "Bash(node --check services/local-server/src/deepseek-agent.mjs)",
+      "Bash(node --check services/local-server/src/browser-tools.mjs)"
     ]
   }
 }

@@ -783,130 +783,33 @@ export function App() {
     setBusy(true);
     setMessages((current) => [...current, newMessage("user", text)]);
 
-    let nonTauriPid = "";
-    const updateNonTauriPlaceholder = (updater: (m: ChatMessage) => ChatMessage) => {
-      if (!nonTauriPid) return;
-      setMessages((current) =>
-        current.map((m) => (m.id === nonTauriPid ? updater(m) : m)),
-      );
-    };
-
     try {
-      if (tauriClient) {
-        const label = nativeWebview.current;
-        if (!label) {
-          throw new Error("浏览器 WebView 还没有准备好。");
-        }
-
-        const pid = `assistant-${crypto.randomUUID()}`;
-        const placeholder: ChatMessage = {
-          id: pid,
-          role: "assistant",
-          text: "",
-          thinking: [],
-          _pending: true,
-          _startedAt: Date.now(),
-        };
-        pendingMessageIdRef.current = pid;
-        setMessages((current) => [...current, placeholder]);
-
-        await runAgentLoop(label, text);
-        pendingMessageIdRef.current = null;
-        return;
+      const label = nativeWebview.current;
+      if (!label) {
+        throw new Error("浏览器 WebView 还没有准备好。");
       }
 
-      nonTauriPid = `assistant-${crypto.randomUUID()}`;
+      const pid = `assistant-${crypto.randomUUID()}`;
       const placeholder: ChatMessage = {
-        id: nonTauriPid,
+        id: pid,
         role: "assistant",
         text: "",
         thinking: [],
         _pending: true,
         _startedAt: Date.now(),
       };
+      pendingMessageIdRef.current = pid;
       setMessages((current) => [...current, placeholder]);
 
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        let errorMsg = `请求失败 (${response.status})`;
-        try {
-          const parsed = JSON.parse(errorBody);
-          errorMsg = parsed.error || errorMsg;
-        } catch { /* keep status message */ }
-        throw new Error(errorMsg);
-      }
-
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let currentEvent = "";
-      const streamDeadline = Date.now() + 120000;
-
-      while (true) {
-        const remaining = streamDeadline - Date.now();
-        if (remaining <= 0) {
-          throw new Error("任务处理超时，请重试。");
-        }
-
-        const readPromise = reader.read();
-        const timeoutPromise = new Promise<{ done: true; value: undefined }>((_, reject) =>
-          setTimeout(() => reject(new Error("任务处理超时，请重试。")), Math.min(remaining, 15000)),
-        );
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (currentEvent === "thinking") {
-                updateNonTauriPlaceholder((m) => ({
-                  ...m,
-                  thinking: [...(m.thinking || []), data],
-                }));
-              } else if (currentEvent === "result") {
-                updateNonTauriPlaceholder((m) => ({
-                  ...m,
-                  text: data.message,
-                  _pending: false,
-                }));
-              } else if (currentEvent === "error") {
-                throw new Error(data.error);
-              }
-            } catch (parseErr) {
-              if (parseErr instanceof SyntaxError) continue;
-              throw parseErr;
-            }
-          }
-        }
-      }
+      await runAgentLoop(label, text);
+      pendingMessageIdRef.current = null;
     } catch (cause) {
       const message =
         cause instanceof Error
           ? cause.message
           : String(cause || "Agent 执行失败。");
       setError(message);
-      if (nonTauriPid) {
-        updateNonTauriPlaceholder((m) => ({
-          ...m,
-          text: message,
-          _pending: false,
-        }));
-      } else {
-        setMessages((current) => [...current, newMessage("assistant", message)]);
-      }
+      setMessages((current) => [...current, newMessage("assistant", message)]);
     } finally {
       setBusy(false);
       setAgentTrace([]);
