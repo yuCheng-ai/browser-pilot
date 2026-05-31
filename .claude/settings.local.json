@@ -10,7 +10,12 @@
       "Bash(node --check services/local-server/src/agent/config.mjs)",
       "Bash(node --check services/local-server/src/server.mjs)",
       "Bash(node --check services/local-server/src/deepseek-agent.mjs)",
-      "Bash(node --check services/local-server/src/browser-tools.mjs)"
+      "Bash(node --check services/local-server/src/browser-tools.mjs)",
+      "Bash(node --check services/local-server/src/agent/llm-client.mjs)",
+      "Bash(node --check services/local-server/src/agent/intent-lexicon.mjs)",
+      "Bash(node --check packages/agent-runtime/src/index.mjs)",
+      "Bash(node --check integrations/playwright/src/webview-cdp.mjs)",
+      "Bash(npx tsc *)"
     ]
   }
 }

@@ -18,7 +18,7 @@ export async function executeWebViewBrowserActions(payload, options = {}) {
 }
 
 export function createWebViewBrowserTools(payload, options = {}) {
-  return new ToolRegistry(["navigate", "click", "type", "scroll"].map((name) => ({
+  return new ToolRegistry(["navigate", "click", "type", "scroll", "refresh", "go_back", "go_forward"].map((name) => ({
     name,
     description: `Execute ${name} in the controlled WebView through CDP.`,
     terminatesSequence: name === "navigate",

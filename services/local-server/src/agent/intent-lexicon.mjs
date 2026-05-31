@@ -25,5 +25,8 @@ export function isTerminalNoActionReply(reply) { return matchesIntent("terminalN
 export function shouldUseIntentRouter({ message, progress }) {
   const step = Number(progress?.step) || 1;
   const history = Array.isArray(progress?.history) ? progress.history : [];
-  return step === 1 && history.length === 0 && hasNavigationIntent(message);
+  // Always try intent-first routing on step 1 with no history — the LLM decides,
+  // not hardcoded regex. This covers navigate, scroll, refresh, go_back, go_forward,
+  // and returns needs_page when page observation is required.
+  return step === 1 && history.length === 0;
 }

@@ -328,24 +328,71 @@ function parseIntentPlan(content) {
     throw error;
   }
 
+  const reply = cleanText(parsed.reply || "", 320);
   const action = parsed.action || {};
+
+  // Blind-executable: navigate to a known URL
   if (action.type === "navigate" && typeof action.url === "string") {
     return {
-      reply: cleanText(parsed.reply || "正在打开页面。", 320),
+      reply: reply || "正在打开页面。",
       action: { type: "navigate", url: action.url },
     };
   }
 
+  // Blind-executable: scroll (no target needed)
+  if (action.type === "scroll") {
+    return {
+      reply: reply || (action.direction === "up" ? "向上滚动。" : "向下滚动。"),
+      action: {
+        type: "scroll",
+        direction: action.direction === "up" ? "up" : "down",
+        amount: Number.isFinite(Number(action.amount)) ? Number(action.amount) : 650,
+      },
+    };
+  }
+
+  // Blind-executable: browser history / refresh
+  if (action.type === "refresh" || action.type === "go_back" || action.type === "go_forward") {
+    const labels = { refresh: "刷新页面。", go_back: "返回上一页。", go_forward: "前进到下一页。" };
+    return {
+      reply: reply || labels[action.type],
+      action: { type: action.type },
+    };
+  }
+
+  // Needs page observation
   if (action.type === "needs_page") {
     return {
-      reply: cleanText(parsed.reply || "需要读取当前页面。", 320),
+      reply: reply || "需要读取当前页面。",
       action: { type: "needs_page" },
     };
   }
 
+  // Fallback: no executable blind action
   return {
-    reply: cleanText(parsed.reply || "需要读取当前页面。", 320),
-    action: { type: "none" },
+    reply: reply || "需要读取当前页面。",
+    action: { type: "needs_page" },
+  };
+}
+
+/**
+ * Quick intent-only planning — no page observation required.
+ * Used when the frontend has not yet observed the page (step 1 fast path).
+ * Returns a blind-executable plan or a needs_page signal.
+ */
+export async function quickIntentPlan({ apiKey, model, message, progress, timeoutMs }) {
+  const body = buildIntentRequestBody({ message, model, progress });
+  const result = await requestIntentPlan({
+    apiKey,
+    body,
+    model,
+    timeoutMs: timeoutMs || intentBudget.timeoutMs,
+  });
+
+  return {
+    ...result,
+    // Annotate so callers know this came from the fast path
+    _intent: true,
   };
 }
 
@@ -428,6 +475,8 @@ export function isRetryableDeepSeekError(error) {
 
   const msg = (error?.message || "").toLowerCase();
   if (msg.includes("fetch failed") || msg.includes("timeout") || msg.includes("rate limit")) return true;
+  if (msg.includes("econnreset") || msg.includes("econnrefused") || msg.includes("enotfound") || msg.includes("enetunreach")) return true;
+  if (msg.includes("unable to connect") || msg.includes("network")) return true;
 
   const status = error?.statusCode || error?.providerStatus;
   if (status && status >= 500) return true;
@@ -440,6 +489,12 @@ function annotateAgentError(error) {
     const wrapped = new Error("Request timed out");
     wrapped.retryable = true;
     return wrapped;
+  }
+
+  // Network-level errors (DNS, TCP reset, connection refused) are always retryable
+  if (isNetworkError(error)) {
+    error.retryable = true;
+    return error;
   }
 
   const status = error?.statusCode || error?.providerStatus || 0;
@@ -461,6 +516,15 @@ function annotateAgentError(error) {
 
   error.retryable = false;
   return error;
+}
+
+function isNetworkError(error) {
+  const code = (error?.cause?.code || error?.code || "").toLowerCase();
+  if (code && (code.includes("econn") || code.includes("enet") || code.includes("dns") || code.includes("enotfound"))) return true;
+  const msg = (error?.cause?.message || error?.message || "").toLowerCase();
+  if (msg.includes("econnreset") || msg.includes("econnrefused") || msg.includes("enotfound") || msg.includes("enetunreach")) return true;
+  if (msg.includes("unable to connect") || msg.includes("network error") || msg.includes("fetch failed")) return true;
+  return false;
 }
 
 function isModelCompatibilityError(error) {

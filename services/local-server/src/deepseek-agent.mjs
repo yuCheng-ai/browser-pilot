@@ -352,7 +352,7 @@ async function planFromIntentOnly({ apiKey, attempts, message, model, progress }
       };
       attempts.push(successAttempt);
 
-      if (plan.action.type === "navigate") {
+      if (plan.action.type === "navigate" || plan.action.type === "scroll" || plan.action.type === "refresh" || plan.action.type === "go_back" || plan.action.type === "go_forward") {
         return {
           ...plan,
           debug: {

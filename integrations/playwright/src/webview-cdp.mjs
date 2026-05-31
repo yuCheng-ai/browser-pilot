@@ -142,6 +142,69 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
       };
     }
 
+    if (action.type === "refresh") {
+      await cdp.send("Page.reload");
+      const progress = await waitForPageProgress(cdp, beforePageState, {
+        actionType: "refresh",
+      });
+      return {
+        ...progressResult({
+          beforeFingerprint,
+          beforePageState,
+          progress,
+        }),
+        reply: progress.changed
+          ? "已刷新页面。"
+          : "已刷新页面，但未检测到页面变化。",
+        action: "refresh",
+        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+        point: null,
+        target: null,
+      };
+    }
+
+    if (action.type === "go_back") {
+      await evaluate(cdp, "history.back()");
+      const progress = await waitForPageProgress(cdp, beforePageState, {
+        actionType: "go_back",
+      });
+      return {
+        ...progressResult({
+          beforeFingerprint,
+          beforePageState,
+          progress,
+        }),
+        reply: progress.changed
+          ? "已返回上一页。"
+          : "已尝试返回上一页，但未检测到页面变化。",
+        action: "go_back",
+        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+        point: null,
+        target: null,
+      };
+    }
+
+    if (action.type === "go_forward") {
+      await evaluate(cdp, "history.forward()");
+      const progress = await waitForPageProgress(cdp, beforePageState, {
+        actionType: "go_forward",
+      });
+      return {
+        ...progressResult({
+          beforeFingerprint,
+          beforePageState,
+          progress,
+        }),
+        reply: progress.changed
+          ? "已前进到下一页。"
+          : "已尝试前进，但未检测到页面变化。",
+        action: "go_forward",
+        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+        point: null,
+        target: null,
+      };
+    }
+
     return {
       reply: "没有执行浏览器动作。",
       action: "none",

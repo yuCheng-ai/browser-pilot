@@ -1031,9 +1031,18 @@ export function toPromptText({ message, taskState, observations }) {
     if (diffBits.length) lines.push(`├─ Changes: ${diffBits.join(", ")}`);
   }
 
+  // ── Intent-driven layer pruning ──
+  // Different intents need different data. Search/input tasks only need
+  // Inputs + Interactive + Recommended; content tasks need Content blocks;
+  // read tasks only need Content. Skip noise for the current intent.
+  const showRegions = mode === "general" || mode === "navigation_followup";
+  const showContent = mode !== "input_or_submit" && mode !== "input_after_selection";
+  const showInteractive = mode !== "read_or_extract";
+  const showInputs = mode !== "content_selection" && mode !== "read_or_extract";
+
   // Regions
   const totalRegions = (observations?.summary?.totalRegions) || regions.length;
-  if (regions.length) {
+  if (showRegions && regions.length) {
     lines.push(`├─ Regions (${regions.length}/${totalRegions} shown)`);
     regions.forEach((region) => {
       const id = cleanText(region.id, 20);
@@ -1047,7 +1056,7 @@ export function toPromptText({ message, taskState, observations }) {
 
   // Content blocks
   const totalBlocks = (observations?.summary?.totalBlocks) || blocks.length;
-  if (blocks.length) {
+  if (showContent && blocks.length) {
     lines.push(`├─ Content (${blocks.length}/${totalBlocks} shown)`);
     blocks.forEach((block) => {
       const id = cleanText(block.id, 20);
@@ -1061,7 +1070,7 @@ export function toPromptText({ message, taskState, observations }) {
 
   // Interactive elements (targets)
   const totalTargets = (observations?.summary?.totalTargets) || targets.length;
-  if (targets.length) {
+  if (showInteractive && targets.length) {
     lines.push(`├─ Interactive (${targets.length}/${totalTargets} shown)`);
     targets.forEach((target) => {
       const tag = targetTypeTag(target);
@@ -1082,7 +1091,7 @@ export function toPromptText({ message, taskState, observations }) {
 
   // Inputs
   const totalInputs = (observations?.summary?.totalInputs) || inputs.length;
-  if (inputs.length) {
+  if (showInputs && inputs.length) {
     lines.push(`├─ Inputs (${inputs.length}/${totalInputs} shown)`);
     inputs.forEach((input) => {
       const targetId = cleanText(input.targetId, 20);
@@ -1096,49 +1105,9 @@ export function toPromptText({ message, taskState, observations }) {
     });
   }
 
-  // Relations
-  const totalRelations = (observations?.summary?.totalRelations) || relations.length;
-  if (relations.length) {
-    lines.push(`├─ Relations (${relations.length}/${totalRelations} shown)`);
-    // Group relations by type and from
-    const contains = new Map();
-    const belongsTo = new Map();
-    relations.forEach((rel) => {
-      const type = cleanText(rel.type, 20);
-      const from = cleanShortId(rel.from);
-      const to = cleanShortId(rel.to);
-      if (type === "contains" || type === "belongs_to") {
-        const map = type === "contains" ? contains : belongsTo;
-        if (!map.has(from)) map.set(from, []);
-        map.get(from).push(to);
-      }
-    });
-    const allMaps = [
-      { label: "contains", map: contains },
-      { label: "belongs_to", map: belongsTo },
-    ];
-    allMaps.forEach(({ label, map }) => {
-      map.forEach((toIds, from) => {
-        const toList = uniqueStrings(toIds).slice(0, 10).join(",");
-        lines.push(`│  [${from}] ${label} [${toList}]`);
-      });
-    });
-  }
-
-  // Visuals
-  const visuals = observations?.vision || full.visuals || [];
-  const totalVisuals = (observations?.summary?.totalVisuals) || visuals.length;
-  if (visuals.length) {
-    lines.push(`├─ Visuals (${visuals.length}/${totalVisuals} shown)`);
-    visuals.forEach((visual) => {
-      const id = cleanText(visual.id, 20);
-      const kind = cleanText(visual.kind || "visual", 16);
-      const alt = cleanText(visual.alt || visual.title || visual.ariaLabel, 80);
-      const nearby = cleanText(visual.nearbyText, 80);
-      const nearbyPart = nearby ? ` near: "${nearby}"` : "";
-      lines.push(`│  [${id}] ${kind}: "${alt}"${nearbyPart}`);
-    });
-  }
+  // Relations + Visuals disabled — structural metadata noise,
+  // not useful for action planning. Target IDs on Interactive elements
+  // already encode the spatial relationships that matter.
 
   // Focused context
   if (focused) {

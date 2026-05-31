@@ -13,6 +13,7 @@ import {
   buildAgentObservations,
   planBrowserAction,
 } from "./deepseek-agent.mjs";
+import { quickIntentPlan } from "./agent/llm-client.mjs";
 import { createExtractor } from "../../../packages/extractor/src/index.mjs";
 
 let extractor = null;
@@ -209,6 +210,30 @@ async function planExternalBrowserTurn(payload) {
   const settings = await loadSettings();
   if (!settings.deepSeekApiKey) {
     throw new Error("先在设置中保存 DeepSeek API Key。");
+  }
+
+  // Intent-first fast path: no page observation provided → try blind-executable actions
+  if (!payload?.state) {
+    const intentPlan = await quickIntentPlan({
+      apiKey: settings.deepSeekApiKey,
+      model: settings.model,
+      message,
+      progress: payload?.progress || { step: 1, maxSteps: 8, history: [] },
+    });
+
+    return {
+      message: intentPlan.reply,
+      action: intentPlan.action,
+      actions: [intentPlan.action],
+      evaluationPreviousGoal: "",
+      memory: "",
+      nextGoal: intentPlan.action.type === "needs_page" ? "需要观察页面。" : intentPlan.reply,
+      done: intentPlan.action.type === "none",
+      success: null,
+      decision: null,
+      debug: { stage: "intent", model: settings.model, budget: "intent" },
+      _intent: true,
+    };
   }
 
   const state = normalizeExternalBrowserState(payload?.state);

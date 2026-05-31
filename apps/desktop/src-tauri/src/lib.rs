@@ -481,6 +481,42 @@ async fn browser_agent_execute(
         target,
       })
     }
+    "refresh" => {
+      let before_url = webview.url().ok().map(|url| url.to_string());
+      let _ = webview.eval("location.reload()");
+      std::thread::sleep(Duration::from_millis(800));
+      Ok(BrowserAgentResult {
+        reply: "已刷新页面。".into(),
+        action: "refresh".into(),
+        url: webview.url().ok().map(|url| url.to_string()).or(before_url),
+        point: None,
+        target: None,
+      })
+    }
+    "go_back" => {
+      let before_url = webview.url().ok().map(|url| url.to_string());
+      let _ = webview.eval("history.back()");
+      std::thread::sleep(Duration::from_millis(800));
+      Ok(BrowserAgentResult {
+        reply: "已返回上一页。".into(),
+        action: "go_back".into(),
+        url: webview.url().ok().map(|url| url.to_string()).or(before_url),
+        point: None,
+        target: None,
+      })
+    }
+    "go_forward" => {
+      let before_url = webview.url().ok().map(|url| url.to_string());
+      let _ = webview.eval("history.forward()");
+      std::thread::sleep(Duration::from_millis(800));
+      Ok(BrowserAgentResult {
+        reply: "已前进到下一页。".into(),
+        action: "go_forward".into(),
+        url: webview.url().ok().map(|url| url.to_string()).or(before_url),
+        point: None,
+        target: None,
+      })
+    }
     "none" => Ok(BrowserAgentResult {
       reply: "没有执行浏览器动作。".into(),
       action: "none".into(),

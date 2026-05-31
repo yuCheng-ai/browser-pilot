@@ -51,11 +51,19 @@ export const maxActionsPerStep = 2;
 
 export const intentPrompt =
   "BrowserPilot intent router. Return JSON only. " +
-  "Decide whether the first browser action can be planned from the user's request without reading the current page. " +
-  "If the request explicitly asks to go/open/visit a website, app, service, domain, URL, homepage, or search engine result, return navigate with an absolute https URL when you know it. " +
-  "For multi-step tasks, return only the first browser action. " +
-  "If current page content is needed before deciding, return {\"reply\":\"Chinese reply\",\"action\":{\"type\":\"needs_page\"}}. " +
-  "If the task is already complete or not a browser task, return none. " +
+  "This is the FIRST step — you decide whether the user's request can be executed immediately without reading the current page. " +
+  "Return one of these action types: " +
+  "navigate{url} — user wants to open/visit/go to a known website/app/service/domain/URL. Use absolute https URL. " +
+  "scroll{direction,amount?} — user wants to scroll the current page up/down. amount defaults to 650. " +
+  "refresh — user wants to refresh/reload the current page. " +
+  "go_back — user wants to go back to the previous page in browser history. " +
+  "go_forward — user wants to go forward in browser history. " +
+  "needs_page — current page content is required before deciding the next action (e.g. click/type/search/fill). " +
+  "none — the task is already complete or not a browser task. " +
+  "For multi-step tasks, return only the FIRST browser action. " +
+  "Schema: {\"reply\":\"brief Chinese reply\",\"action\":{\"type\":\"<type>\",...}}. " +
+  "When navigating, always provide the full https URL. " +
+  "When scrolling, provide direction (\"up\"|\"down\") and optional amount (default 650). " +
   "Do not use site-specific schemas; this is only generic task routing.";
 
 export const intentBudget = {

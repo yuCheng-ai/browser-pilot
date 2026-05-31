@@ -51,7 +51,7 @@ type NativeBounds = {
 };
 
 type BrowserAgentAction = {
-  type: "navigate" | "click" | "type" | "scroll" | "none";
+  type: "navigate" | "click" | "type" | "scroll" | "refresh" | "go_back" | "go_forward" | "needs_page" | "none";
   targetId?: string;
   url?: string;
   text?: string;
@@ -348,7 +348,7 @@ type AgentStepHistory = {
 type AgentTraceItem = {
   id: string;
   step: number;
-  phase: "observe" | "plan" | "action" | "result" | "error";
+  phase: "intent" | "observe" | "plan" | "action" | "result" | "error";
   title: string;
   detail: string;
 };
@@ -554,6 +554,18 @@ function describeAction(action?: BrowserAgentAction) {
 
   if (action.type === "scroll") {
     return `动作：向${action.direction === "up" ? "上" : "下"}滚动${action.targetId ? ` ${action.targetId}` : ""}`;
+  }
+
+  if (action.type === "refresh") {
+    return "动作：刷新页面";
+  }
+
+  if (action.type === "go_back") {
+    return "动作：返回上一页";
+  }
+
+  if (action.type === "go_forward") {
+    return "动作：前进到下一页";
   }
 
   return `动作：${action.type}`;
@@ -823,16 +835,166 @@ export function App() {
     let consecutiveFailures = 0;
     let shouldStop = false;
 
+    let pendingNavigation = true; // Step 1 always needs a full snapshot baseline
+
     for (let step = 1; step <= maxAgentSteps && !shouldStop; step += 1) {
+      // ── Step 1 intent-first fast path ──
+      // Try planning without page observation first. If the LLM returns a
+      // blind-executable action (navigate/scroll/refresh/go_back/go_forward),
+      // execute it directly and skip the costly full-page snapshot.
+      if (step === 1) {
+        appendTrace({
+          step,
+          phase: "intent",
+          title: "意图识别",
+          detail: "快速判断是否可以无需观察页面直接执行。",
+        });
+        let quickPlan: BrowserAgentPlan | null = null;
+        try {
+          quickPlan = await api<BrowserAgentPlan>("/api/agent/plan", {
+            method: "POST",
+            timeoutMs: 120000,
+            body: JSON.stringify({
+              message: text,
+              progress: { step: 1, maxSteps: maxAgentSteps, history: [] },
+            }),
+          });
+        } catch (cause) {
+          appendTrace({
+            step,
+            phase: "intent",
+            title: "意图识别失败",
+            detail: errorMessage(cause, "意图识别失败，回退到完整页面观察。"),
+          });
+        }
+
+        if (quickPlan) {
+          const quickActions = planActions(quickPlan).filter((a) =>
+            isExecutableBrowserAction(a),
+          );
+          if (quickActions.length && !quickPlan.done) {
+            appendTrace({
+              step,
+              phase: "intent",
+              title: "直接执行",
+              detail: `${quickPlan.message || ""}\n${describeActions(quickActions)}`,
+            });
+            if (quickPlan.message) {
+              replies.push(quickPlan.message);
+            }
+
+            const quickResults: BrowserAgentResult[] = await executePlannedActions(
+              label,
+              quickActions,
+              null, // No page snapshot yet
+            ).catch((cause) => {
+              const msg = cause instanceof Error ? cause.message : String(cause || "执行失败");
+              return [
+                {
+                  ok: false,
+                  action: quickActions[0]?.type || "none",
+                  reply: "动作执行失败。",
+                  error: msg,
+                } satisfies BrowserAgentResult,
+              ] as BrowserAgentResult[];
+            });
+
+            for (let index = 0; index < quickResults.length; index += 1) {
+              const result = quickResults[index];
+              const action = quickActions[index] || quickActions[quickActions.length - 1];
+
+              if (result.url) {
+                setAddress(result.url);
+              }
+
+              if (result.ok === false) {
+                consecutiveFailures += 1;
+                const msg = result.error || result.reply || "动作执行失败。";
+                appendTrace({
+                  step,
+                  phase: "error",
+                  title: "执行失败",
+                  detail: `${describeAction(action)}\n${msg}`,
+                });
+                history.push(
+                  historyItemFromAction({
+                    action,
+                    ok: false,
+                    error: msg,
+                    plan: quickPlan,
+                    result,
+                    state: null,
+                  }),
+                );
+                if (consecutiveFailures >= maxAgentFailures) {
+                  const finalMsg = `连续 ${consecutiveFailures} 次动作失败，任务已停止：${msg}`;
+                  replies.push(finalMsg);
+                  shouldStop = true;
+                }
+                break;
+              }
+
+              consecutiveFailures = 0;
+              if (result.reply) {
+                replies.push(result.reply);
+              }
+              appendTrace({
+                step,
+                phase: "result",
+                title: "执行结果",
+                detail: result.reply || "动作执行完成。",
+              });
+              history.push(
+                historyItemFromAction({
+                  action,
+                  ok: true,
+                  plan: quickPlan,
+                  result,
+                  state: null,
+                }),
+              );
+
+              await sleep(postActionObservationDelay(action, text));
+
+              if (
+                action.type === "navigate" ||
+                action.type === "refresh" ||
+                action.type === "go_back" ||
+                action.type === "go_forward"
+              ) {
+                pendingNavigation = true; // Next observation must be full snapshot
+                break;
+              }
+            }
+
+            if (!shouldStop) {
+              // After a blind scroll (no navigation), patch is sufficient
+              continue; // Skip observation, go to step 2
+            }
+            break;
+          }
+
+          // Intent returned needs_page — fall through to normal observation
+          appendTrace({
+            step,
+            phase: "intent",
+            title: "需要观察页面",
+            detail: quickPlan.message || "需要先读取页面内容才能规划。",
+          });
+        }
+      }
+
+      // ── Normal: observe → plan → execute ──
       const observation = await invoke<BrowserObservationEnvelope>("browser_agent_observe", {
         label,
-        forceFull: step === 1 || consecutiveFailures > 0,
+        forceFull: pendingNavigation || consecutiveFailures > 0,
       });
+      pendingNavigation = false; // Reset after observation
       const state = observation.snapshot;
       appendTrace({
         step,
         phase: "observe",
-        title: observation.kind === "patch" ? "增量观察" : "观察页面",
+        title: observation.kind === "patch" ? "增量观察" : "完整观察",
         detail: summarizeObservation(observation),
       });
       appendTrace({
@@ -966,7 +1128,13 @@ export function App() {
 
         await sleep(postActionObservationDelay(action, text));
 
-        if (action.type === "navigate") {
+        if (
+          action.type === "navigate" ||
+          action.type === "refresh" ||
+          action.type === "go_back" ||
+          action.type === "go_forward"
+        ) {
+          pendingNavigation = true; // Next observation must be full snapshot
           break;
         }
       }
@@ -1018,6 +1186,10 @@ export function App() {
       return 900;
     }
 
+    if (action.type === "refresh" || action.type === "go_back" || action.type === "go_forward") {
+      return 900;
+    }
+
     if (
       action.type === "click" &&
       /comment|reply|type|input|send|post|publish|评论|回复|输入|发送|发表|发布|留言/i.test(request)
@@ -1049,7 +1221,7 @@ export function App() {
     ok: boolean;
     plan: BrowserAgentPlan;
     result: BrowserAgentResult;
-    state: BrowserAgentSnapshot;
+    state: BrowserAgentSnapshot | null;
   }): AgentStepHistory {
     return {
       action: action.type,
@@ -1061,14 +1233,14 @@ export function App() {
       targetId: action.targetId || result.target?.id || "",
       text: action.type === "type" ? action.text || "" : "",
       submitted: action.type === "type" && Boolean(action.submit),
-      url: result.url || state.url,
+      url: result.url || state?.url || "",
     };
   }
 
   async function executePlannedActions(
     label: string,
     actions: BrowserAgentAction[],
-    state: BrowserAgentSnapshot,
+    state: BrowserAgentSnapshot | null,
   ) {
     const limitedActions = actions
       .filter(isExecutableBrowserAction)
@@ -1135,7 +1307,12 @@ export function App() {
       return Boolean(action.targetId) && typeof action.text === "string";
     }
 
-    return action.type === "scroll";
+    // Blind-executable: no page observation needed
+    if (action.type === "scroll" || action.type === "refresh" || action.type === "go_back" || action.type === "go_forward") {
+      return true;
+    }
+
+    return false;
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {

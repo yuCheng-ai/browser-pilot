@@ -5,6 +5,9 @@ const browserActionTypes = new Set([
   "click",
   "type",
   "scroll",
+  "refresh",
+  "go_back",
+  "go_forward",
 ]);
 
 export function normalizeAgentDecision(raw, options = {}) {
@@ -114,6 +117,10 @@ export function normalizeBrowserAction(action) {
     };
   }
 
+  if (type === "refresh" || type === "go_back" || type === "go_forward") {
+    return { type };
+  }
+
   return { type: "none" };
 }
 
@@ -122,7 +129,7 @@ export function hasExecutableAction(decision) {
 }
 
 export function actionTerminatesSequence(action) {
-  return ["navigate"].includes(action?.type);
+  return ["navigate", "refresh", "go_back", "go_forward"].includes(action?.type);
 }
 
 export function actionSummary(action) {
@@ -145,6 +152,10 @@ export function actionSummary(action) {
   if (action.type === "scroll") {
     return `scroll ${action.direction || "down"} ${Number(action.amount) || 0}`;
   }
+
+  if (action.type === "refresh") return "refresh";
+  if (action.type === "go_back") return "go_back";
+  if (action.type === "go_forward") return "go_forward";
 
   return cleanText(action.type, 80);
 }
