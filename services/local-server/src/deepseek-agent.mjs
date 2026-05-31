@@ -115,7 +115,6 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
     };
   }
 
-  let lastError = null;
   const attempts = [];
   const intentPlan = await planFromIntentOnly({
     apiKey,
@@ -129,6 +128,13 @@ export async function planBrowserAction({ apiKey, model, message, observation, s
   if (intentPlan) {
     return intentPlan;
   }
+
+  return planWithBudget({ apiKey, model, message, observation, state, progress, log });
+}
+
+async function planWithBudget({ apiKey, model, message, observation, state, progress, log }) {
+  let lastError = null;
+  const attempts = [];
 
   for (const candidateModel of modelCandidates(model)) {
     for (const budget of budgets) {

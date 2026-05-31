@@ -38,171 +38,17 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
     const beforePageState = await captureCompactPageState(cdp);
     const beforeFingerprint = fingerprintPageState(beforePageState);
 
-    if (action.type === "navigate") {
-      const url = normalizeUrl(action.url);
-      await cdp.send("Page.navigate", { url });
-      const progress = await waitForPageProgress(cdp, beforePageState, {
-        actionType: "navigate",
+    const handler = ACTION_HANDLERS.get(action.type);
+    if (handler) {
+      return handler({
+        cdp,
+        action,
+        state,
+        stateTarget,
+        beforePageState,
+        beforeFingerprint,
+        targetInfo,
       });
-      return {
-        ...progressResult({
-          beforeFingerprint,
-          beforePageState,
-          progress,
-        }),
-        reply: progress.changed
-          ? `已通过 CDP 打开 ${url}。`
-          : `已通过 CDP 打开 ${url}，但未检测到页面变化。`,
-        action: "navigate",
-        url: progress.afterPageState?.url || url,
-        point: null,
-        target: null,
-      };
-    }
-
-    if (action.type === "click") {
-      const { point } = await locateTarget(cdp, action.targetId, stateTarget);
-      await dispatchClick(cdp, point);
-      const progress = await waitForPageProgress(cdp, beforePageState, {
-        actionType: "click",
-      });
-
-      return {
-        ...progressResult({
-          beforeFingerprint,
-          beforePageState,
-          progress,
-        }),
-        reply: progress.changed
-          ? `已通过 CDP 点击 ${stateTarget?.label || action.targetId}。`
-          : `已通过 CDP 点击 ${stateTarget?.label || action.targetId}，但未检测到页面变化。`,
-        action: "click",
-        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-        point,
-        target: stateTarget || null,
-      };
-    }
-
-    if (action.type === "type") {
-      const { point } = await locateTarget(cdp, action.targetId, stateTarget);
-      await dispatchClick(cdp, point);
-      await selectAll(cdp);
-      await cdp.send("Input.insertText", {
-        text: String(action.text || ""),
-      });
-
-      if (action.submit) {
-        await pressEnter(cdp);
-      }
-
-      const progress = await waitForPageProgress(cdp, beforePageState, {
-        actionType: "type",
-      });
-      return {
-        ...progressResult({
-          beforeFingerprint,
-          beforePageState,
-          progress,
-        }),
-        reply: action.submit
-          ? progress.changed
-            ? `已通过 CDP 输入并提交：${action.text || ""}。`
-            : "已通过 CDP 输入并尝试提交，但未检测到页面变化。"
-          : `已通过 CDP 输入：${action.text || ""}。`,
-        action: "type",
-        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-        point,
-        target: stateTarget || null,
-      };
-    }
-
-    if (action.type === "scroll") {
-      const point = action.targetId
-        ? (await locateTarget(cdp, action.targetId, stateTarget)).point
-        : await viewportCenter(cdp);
-      const amount = Math.max(80, Math.min(1800, Number(action.amount) || 650));
-      const deltaY = action.direction === "up" ? -amount : amount;
-      await dispatchWheel(cdp, point, deltaY);
-      const progress = await waitForPageProgress(cdp, beforePageState, {
-        actionType: "scroll",
-      });
-      return {
-        ...progressResult({
-          beforeFingerprint,
-          beforePageState,
-          progress,
-        }),
-        reply: progress.changed
-          ? `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动。`
-          : `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动，但未检测到页面变化。`,
-        action: "scroll",
-        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-        point,
-        target: stateTarget || null,
-      };
-    }
-
-    if (action.type === "refresh") {
-      await cdp.send("Page.reload");
-      const progress = await waitForPageProgress(cdp, beforePageState, {
-        actionType: "refresh",
-      });
-      return {
-        ...progressResult({
-          beforeFingerprint,
-          beforePageState,
-          progress,
-        }),
-        reply: progress.changed
-          ? "已刷新页面。"
-          : "已刷新页面，但未检测到页面变化。",
-        action: "refresh",
-        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-        point: null,
-        target: null,
-      };
-    }
-
-    if (action.type === "go_back") {
-      await evaluate(cdp, "history.back()");
-      const progress = await waitForPageProgress(cdp, beforePageState, {
-        actionType: "go_back",
-      });
-      return {
-        ...progressResult({
-          beforeFingerprint,
-          beforePageState,
-          progress,
-        }),
-        reply: progress.changed
-          ? "已返回上一页。"
-          : "已尝试返回上一页，但未检测到页面变化。",
-        action: "go_back",
-        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-        point: null,
-        target: null,
-      };
-    }
-
-    if (action.type === "go_forward") {
-      await evaluate(cdp, "history.forward()");
-      const progress = await waitForPageProgress(cdp, beforePageState, {
-        actionType: "go_forward",
-      });
-      return {
-        ...progressResult({
-          beforeFingerprint,
-          beforePageState,
-          progress,
-        }),
-        reply: progress.changed
-          ? "已前进到下一页。"
-          : "已尝试前进，但未检测到页面变化。",
-        action: "go_forward",
-        url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-        point: null,
-        target: null,
-      };
     }
 
     return {
@@ -215,6 +61,183 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
   } finally {
     cdp.close();
   }
+}
+
+const ACTION_HANDLERS = new Map([
+  ["navigate", execNavigate],
+  ["click", execClick],
+  ["type", execType],
+  ["scroll", execScroll],
+  ["refresh", execRefresh],
+  ["go_back", execGoBack],
+  ["go_forward", execGoForward],
+]);
+
+async function execNavigate({ cdp, action, beforePageState, beforeFingerprint }) {
+  const url = normalizeUrl(action.url);
+  await cdp.send("Page.navigate", { url });
+  const progress = await waitForPageProgress(cdp, beforePageState, {
+    actionType: "navigate",
+  });
+  return {
+    ...progressResult({
+      beforeFingerprint,
+      beforePageState,
+      progress,
+    }),
+    reply: progress.changed
+      ? `已通过 CDP 打开 ${url}。`
+      : `已通过 CDP 打开 ${url}，但未检测到页面变化。`,
+    action: "navigate",
+    url: progress.afterPageState?.url || url,
+    point: null,
+    target: null,
+  };
+}
+
+async function execClick({ cdp, action, state, stateTarget, beforePageState, beforeFingerprint, targetInfo }) {
+  const { point } = await locateTarget(cdp, action.targetId, stateTarget);
+  await dispatchClick(cdp, point);
+  const progress = await waitForPageProgress(cdp, beforePageState, {
+    actionType: "click",
+  });
+
+  return {
+    ...progressResult({
+      beforeFingerprint,
+      beforePageState,
+      progress,
+    }),
+    reply: progress.changed
+      ? `已通过 CDP 点击 ${stateTarget?.label || action.targetId}。`
+      : `已通过 CDP 点击 ${stateTarget?.label || action.targetId}，但未检测到页面变化。`,
+    action: "click",
+    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+    point,
+    target: stateTarget || null,
+  };
+}
+
+async function execType({ cdp, action, state, stateTarget, beforePageState, beforeFingerprint, targetInfo }) {
+  const { point } = await locateTarget(cdp, action.targetId, stateTarget);
+  await dispatchClick(cdp, point);
+  await selectAll(cdp);
+  await cdp.send("Input.insertText", {
+    text: String(action.text || ""),
+  });
+
+  if (action.submit) {
+    await pressEnter(cdp);
+  }
+
+  const progress = await waitForPageProgress(cdp, beforePageState, {
+    actionType: "type",
+  });
+  return {
+    ...progressResult({
+      beforeFingerprint,
+      beforePageState,
+      progress,
+    }),
+    reply: action.submit
+      ? progress.changed
+        ? `已通过 CDP 输入并提交：${action.text || ""}。`
+        : "已通过 CDP 输入并尝试提交，但未检测到页面变化。"
+      : `已通过 CDP 输入：${action.text || ""}。`,
+    action: "type",
+    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+    point,
+    target: stateTarget || null,
+  };
+}
+
+async function execScroll({ cdp, action, state, stateTarget, beforePageState, beforeFingerprint, targetInfo }) {
+  const point = action.targetId
+    ? (await locateTarget(cdp, action.targetId, stateTarget)).point
+    : await viewportCenter(cdp);
+  const amount = Math.max(80, Math.min(1800, Number(action.amount) || 650));
+  const deltaY = action.direction === "up" ? -amount : amount;
+  await dispatchWheel(cdp, point, deltaY);
+  const progress = await waitForPageProgress(cdp, beforePageState, {
+    actionType: "scroll",
+  });
+  return {
+    ...progressResult({
+      beforeFingerprint,
+      beforePageState,
+      progress,
+    }),
+    reply: progress.changed
+      ? `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动。`
+      : `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动，但未检测到页面变化。`,
+    action: "scroll",
+    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+    point,
+    target: stateTarget || null,
+  };
+}
+
+async function execRefresh({ cdp, action, state, beforePageState, beforeFingerprint, targetInfo }) {
+  await cdp.send("Page.reload");
+  const progress = await waitForPageProgress(cdp, beforePageState, {
+    actionType: "refresh",
+  });
+  return {
+    ...progressResult({
+      beforeFingerprint,
+      beforePageState,
+      progress,
+    }),
+    reply: progress.changed
+      ? "已刷新页面。"
+      : "已刷新页面，但未检测到页面变化。",
+    action: "refresh",
+    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+    point: null,
+    target: null,
+  };
+}
+
+async function execGoBack({ cdp, action, state, beforePageState, beforeFingerprint, targetInfo }) {
+  await evaluate(cdp, "history.back()");
+  const progress = await waitForPageProgress(cdp, beforePageState, {
+    actionType: "go_back",
+  });
+  return {
+    ...progressResult({
+      beforeFingerprint,
+      beforePageState,
+      progress,
+    }),
+    reply: progress.changed
+      ? "已返回上一页。"
+      : "已尝试返回上一页，但未检测到页面变化。",
+    action: "go_back",
+    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+    point: null,
+    target: null,
+  };
+}
+
+async function execGoForward({ cdp, action, state, beforePageState, beforeFingerprint, targetInfo }) {
+  await evaluate(cdp, "history.forward()");
+  const progress = await waitForPageProgress(cdp, beforePageState, {
+    actionType: "go_forward",
+  });
+  return {
+    ...progressResult({
+      beforeFingerprint,
+      beforePageState,
+      progress,
+    }),
+    reply: progress.changed
+      ? "已前进到下一页。"
+      : "已尝试前进，但未检测到页面变化。",
+    action: "go_forward",
+    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
+    point: null,
+    target: null,
+  };
 }
 
 async function findTargetInfo(expectedUrl, options) {

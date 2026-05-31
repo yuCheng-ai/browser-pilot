@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node ../../scripts/kill-port.mjs 4178 && node --watch src/server.mjs",
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/deepseek-agent.mjs && node --check src/browser-tools.mjs && node --check src/agent/config.mjs && node --check src/agent/text.mjs && node --check src/agent/intent-lexicon.mjs && node --check src/agent/progress.mjs && node --check src/agent/deepseek-client.mjs && node --check src/agent/observations.mjs"
+    "check": "node --check src/server.mjs && node --check src/deepseek-agent.mjs && node --check src/browser-tools.mjs && node --check src/agent/config.mjs && node --check src/agent/text.mjs && node --check src/agent/intent-lexicon.mjs && node --check src/agent/progress.mjs && node --check src/agent/llm-client.mjs && node --check src/agent/normalizer.mjs && node --check src/agent/selector.mjs && node --check src/agent/observations.mjs && node --check src/thinking-log.mjs"
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^2.0.35",

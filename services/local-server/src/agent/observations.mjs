@@ -8,6 +8,22 @@ import { progressHistory } from "./progress.mjs";
 
 import { cleanText, uniqueStrings } from "./text.mjs";
 
+import {
+  normalizeBlocks,
+  normalizeInputs,
+  normalizePageState,
+  normalizePatchInput,
+  normalizePatchInputs,
+  normalizePatchRegions,
+  normalizePatchTargets,
+  normalizeRegions,
+  normalizeRelations,
+  normalizeTargets,
+  normalizeVisualMeta,
+} from "./normalizer.mjs";
+
+import { queryTerms, selectPromptSlice } from "./selector.mjs";
+
 export function buildAgentObservations({
   budget,
   budgetName,
@@ -320,7 +336,7 @@ function buildActionableDiffObservation({ message, observation, progress, state 
       changed: Boolean(patch.activeElement?.changed),
       previousTargetId: cleanText(patch.activeElement?.previousTargetId, 40),
       currentTargetId: cleanText(patch.activeElement?.currentTargetId, 40),
-      current: normalizePatchTarget(patch.activeElement?.current),
+      current: normalizePatchTargets(patch.activeElement?.current ? [patch.activeElement.current] : [])[0] || null,
     },
     editableInputs: {
       active: activeInput,
@@ -387,78 +403,6 @@ function candidateActionsFromDiff({
   return candidates.slice(0, 4);
 }
 
-function normalizePatchInputs(inputs) {
-  return Array.isArray(inputs)
-    ? inputs.map(normalizePatchInput).filter(Boolean).slice(0, 8)
-    : [];
-}
-
-function normalizePatchInput(input) {
-  if (!input || typeof input !== "object") {
-    return null;
-  }
-
-  return {
-    id: cleanText(input.id, 40),
-    targetId: cleanText(input.targetId, 40),
-    name: cleanText(input.name, 100),
-    inputType: cleanText(input.inputType, 60),
-    placeholder: cleanText(input.placeholder, 100),
-    value: cleanText(input.value, 120),
-    context: cleanText(input.context, 160),
-    active: Boolean(input.active),
-    multiline: Boolean(input.multiline),
-    box: normalizeBoxForPrompt(input.box),
-    regionId: cleanText(input.regionId, 40),
-    blockId: cleanText(input.blockId, 40),
-  };
-}
-
-function normalizePatchTargets(targets) {
-  return Array.isArray(targets)
-    ? targets.map(normalizePatchTarget).filter(Boolean).slice(0, 12)
-    : [];
-}
-
-function normalizePatchTarget(target) {
-  if (!target || typeof target !== "object") {
-    return null;
-  }
-
-  return {
-    id: cleanText(target.id, 40),
-    label: cleanText(target.label, 120),
-    tag: cleanText(target.tag, 24),
-    type: cleanText(target.type || target.tag, 40),
-    text: cleanText(target.text, 120),
-    placeholder: cleanText(target.placeholder, 80),
-    context: cleanText(target.context, 120),
-    interaction: normalizeInteraction(target.interaction),
-    semantics: normalizeSemantics(target.semantics),
-    box: normalizeBoxForPrompt(target.box),
-    risk: cleanText(target.risk?.level || target.risk || "none", 40),
-    regionId: cleanText(target.regionId, 40),
-    blockId: cleanText(target.blockId, 40),
-  };
-}
-
-function normalizePatchRegions(regions) {
-  return Array.isArray(regions)
-    ? regions
-        .slice(0, 8)
-        .map((region) => ({
-          id: cleanText(region?.id, 40),
-          role: cleanText(region?.role || "section", 40),
-          label: cleanText(region?.label, 100),
-          text: cleanText(region?.text, 180),
-          box: normalizeBoxForPrompt(region?.box),
-          targetIds: normalizeTargetIds(region?.targetIds),
-          blockIds: normalizeTargetIds(region?.blockIds),
-          inputIds: normalizeTargetIds(region?.inputIds),
-        }))
-    : [];
-}
-
 function resolveObservationBudget({ budget, budgetName }) {
   if (budget && typeof budget === "object") {
     return budget;
@@ -503,433 +447,6 @@ function inferObservationQuery({ message, progress }) {
   return uniqueStrings([...terms, lastTarget].filter(Boolean)).slice(0, 12).join(" ");
 }
 
-function selectPromptSlice({ budget, message, progress, state }) {
-  const terms = queryTerms(message);
-  const pageState = normalizePageState(state?.state);
-  const activeTargetId = pageState.activeTargetId;
-  const writing = hasWriteIntent(message);
-  const blocks = selectBlocks(state?.blocks || state?.content, budget, terms);
-  const blockIds = new Set(blocks.map((block) => cleanText(block?.id, 40)).filter(Boolean));
-  const pinnedTargetIds = new Set();
-
-  blocks.forEach((block) => {
-    normalizeTargetIds(block?.targetIds).forEach((targetId) => pinnedTargetIds.add(targetId));
-  });
-
-  const inputs = selectInputs(state?.inputs, budget, terms, blockIds, {
-    activeTargetId,
-    writing,
-  });
-  inputs.forEach((input) => {
-    const targetId = cleanText(input?.targetId, 40);
-    if (targetId) {
-      pinnedTargetIds.add(targetId);
-    }
-  });
-
-  const targets = selectTargets(state?.targets, budget, terms, blockIds, pinnedTargetIds, {
-    activeTargetId,
-    writing,
-  });
-  const targetIds = new Set(targets.map((target) => cleanText(target?.id, 40)).filter(Boolean));
-  const regions = selectRegions(state?.regions, budget, blocks, targets, inputs);
-  const regionIds = new Set(regions.map((region) => cleanText(region?.id, 40)).filter(Boolean));
-  const relations = selectRelations(state?.relations, budget, {
-    blockIds,
-    regionIds,
-    targetIds,
-  });
-  const visuals = selectVisuals(state?.visuals, budget, terms, targetIds, regionIds);
-
-  return {
-    regions,
-    blocks,
-    inputs,
-    targets,
-    relations,
-    visuals,
-  };
-}
-
-function normalizePageState(state) {
-  if (!state || typeof state !== "object") {
-    return {
-      readyState: "",
-      activeTargetId: "",
-      hasModal: false,
-      hasOverlay: false,
-      scroll: null,
-    };
-  }
-
-  return {
-    readyState: cleanText(state.readyState, 40),
-    activeTargetId: cleanText(state.activeTargetId, 40),
-    hasModal: Boolean(state.hasModal),
-    hasOverlay: Boolean(state.hasOverlay),
-    scroll: state.scroll
-      ? {
-          x: Math.round(Number(state.scroll.x) || 0),
-          y: Math.round(Number(state.scroll.y) || 0),
-          maxX: Math.round(Number(state.scroll.maxX) || 0),
-          maxY: Math.round(Number(state.scroll.maxY) || 0),
-        }
-      : null,
-  };
-}
-
-function selectBlocks(blocks, budget, terms) {
-  if (!Array.isArray(blocks)) {
-    return [];
-  }
-
-  return blocks
-    .map((block, index) => ({
-      block,
-      score: scoreTextMatch(block?.text, terms) * 100 +
-        scorePosition(block?.box) +
-        Math.max(0, 30 - index),
-    }))
-    .filter((item) => cleanText(item.block?.text, 20) || normalizeTargetIds(item.block?.targetIds).length)
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.contentLimit);
-}
-
-function selectInputs(inputs, budget, terms, blockIds, options = {}) {
-  if (!Array.isArray(inputs)) {
-    return [];
-  }
-
-  const activeTargetId = cleanText(options.activeTargetId, 40);
-  return inputs
-    .map((input, index) => ({
-      input,
-      score:
-        (input?.active || cleanText(input?.targetId, 40) === activeTargetId ? 220 : 0) +
-        (options.writing ? 80 : 0) +
-        scoreTextMatch(
-          [input?.name, input?.placeholder, input?.inputType, input?.context]
-            .filter(Boolean)
-            .join(" "),
-          terms,
-        ) *
-          120 +
-        (blockIds.has(cleanText(input?.blockId, 40)) ? 60 : 0) +
-        Math.max(0, 20 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.inputLimit)
-    .map((item) => item.input);
-}
-
-function selectTargets(targets, budget, terms, blockIds, pinnedTargetIds, options = {}) {
-  if (!Array.isArray(targets)) {
-    return [];
-  }
-
-  const activeTargetId = cleanText(options.activeTargetId, 40);
-  return targets
-    .map((target, index) => ({
-      target,
-      score:
-        (cleanText(target?.id, 40) === activeTargetId ? 220 : 0) +
-        (pinnedTargetIds.has(cleanText(target?.id, 40)) ? 120 : 0) +
-        (blockIds.has(cleanText(target?.blockId, 40)) ? 80 : 0) +
-        scoreTextMatch(
-          [
-            target?.label,
-            target?.text,
-            target?.placeholder,
-            target?.context,
-            target?.semantics?.kind,
-            target?.semantics?.role,
-            ...(Array.isArray(target?.semantics?.intentHints)
-              ? target.semantics.intentHints
-              : []),
-          ]
-            .filter(Boolean)
-            .join(" "),
-          terms,
-        ) *
-          150 +
-        (target?.interaction?.editable ? (options.writing ? 120 : 45) : 0) +
-        (target?.interaction?.clickable ? 25 : 0) +
-        scorePosition(target?.box) +
-        Math.max(0, 20 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.targetLimit)
-    .map((item) => item.target);
-}
-
-function selectRegions(regions, budget, blocks, targets, inputs) {
-  if (!Array.isArray(regions)) {
-    return [];
-  }
-
-  const usedIds = new Set(
-    [
-      ...blocks.map((block) => block?.regionId),
-      ...targets.map((target) => target?.regionId),
-      ...inputs.map((input) => input?.regionId),
-    ]
-      .map((id) => cleanText(id, 40))
-      .filter(Boolean),
-  );
-
-  return regions
-    .map((region, index) => ({
-      region,
-      score:
-        (usedIds.has(cleanText(region?.id, 40)) ? 100 : 0) +
-        (["main", "dialog", "alertdialog", "form", "search"].includes(cleanText(region?.role, 40).toLowerCase())
-          ? 50
-          : 0) +
-        scorePosition(region?.box) +
-        Math.max(0, 12 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.regionLimit)
-    .map((item) => item.region);
-}
-
-function selectRelations(relations, budget, ids) {
-  if (!Array.isArray(relations)) {
-    return [];
-  }
-
-  return relations
-    .filter((relation) => {
-      const from = cleanText(relation?.from, 40);
-      const to = cleanText(relation?.to, 40);
-      return (
-        ids.blockIds.has(from) ||
-        ids.blockIds.has(to) ||
-        ids.regionIds.has(from) ||
-        ids.regionIds.has(to) ||
-        ids.targetIds.has(from) ||
-        ids.targetIds.has(to)
-      );
-    })
-    .slice(0, budget.relationLimit);
-}
-
-function selectVisuals(visuals, budget, terms, targetIds, regionIds) {
-  if (!Array.isArray(visuals)) {
-    return [];
-  }
-
-  return visuals
-    .map((visual, index) => ({
-      visual,
-      score:
-        scoreTextMatch([visual?.alt, visual?.title, visual?.nearbyText].filter(Boolean).join(" "), terms) *
-          80 +
-        (regionIds.has(cleanText(visual?.regionId, 40)) ? 25 : 0) +
-        (normalizeTargetIds(visual?.targetIds).some((targetId) => targetIds.has(targetId)) ? 60 : 0) +
-        scorePosition(visual?.box) +
-        Math.max(0, 10 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.visualLimit)
-    .map((item) => item.visual);
-}
-
-function queryTerms(message) {
-  const text = cleanText(message, 300).toLowerCase();
-  const ascii = text.match(/[a-z0-9._-]{2,}/g) || [];
-  const chinese = Array.from(text.matchAll(/[\u4e00-\u9fff]{1,4}/g)).map((match) => match[0]);
-  return uniqueStrings([...ascii, ...chinese]).slice(0, 24);
-}
-
-function scoreTextMatch(value, terms) {
-  const text = cleanText(value, 800).toLowerCase();
-  if (!text || !terms.length) {
-    return 0;
-  }
-
-  return terms.reduce((score, term) => (term && text.includes(term) ? score + 1 : score), 0);
-}
-
-function scorePosition(box) {
-  const normalized = normalizeBoxForPrompt(box);
-  if (!normalized) {
-    return 0;
-  }
-
-  return Math.max(0, 80 - normalized.y / 12 - normalized.x / 40);
-}
-
-function normalizeRegions(regions, budget) {
-  if (!Array.isArray(regions)) {
-    return [];
-  }
-
-  return regions.slice(0, budget.regionLimit).map((region) => ({
-    id: cleanText(region?.id, 40),
-    role: cleanText(region?.role || "section", 40),
-    label: cleanText(region?.label, 100),
-    text: cleanText(region?.text, 180),
-    box: normalizeBoxForPrompt(region?.box),
-    targetIds: normalizeTargetIds(region?.targetIds).slice(0, 8),
-    blockIds: normalizeTargetIds(region?.blockIds).slice(0, 8),
-    inputIds: normalizeTargetIds(region?.inputIds).slice(0, 6),
-  }));
-}
-
-function normalizeBlocks(blocks, budget) {
-  if (!Array.isArray(blocks)) {
-    return [];
-  }
-
-  return blocks.slice(0, budget.contentLimit).map((block) => ({
-    id: cleanText(block?.id, 40),
-    kind: cleanText(block?.kind || block?.role || "content", 40),
-    role: cleanText(block?.role || "content", 40),
-    text: cleanText(block?.text, budget.contentTextLimit),
-    regionId: cleanText(block?.regionId, 40),
-    targetIds: normalizeTargetIds(block?.targetIds),
-    box: normalizeBoxForPrompt(block?.box),
-  }));
-}
-
-function normalizeInputs(inputs, budget, activeTargetId = "") {
-  if (!Array.isArray(inputs)) {
-    return [];
-  }
-
-  const activeId = cleanText(activeTargetId, 40);
-  return inputs.slice(0, budget.inputLimit).map((input) => ({
-    id: cleanText(input?.id, 40),
-    targetId: cleanText(input?.targetId, 40),
-    name: cleanText(input?.name, 100),
-    inputType: cleanText(input?.inputType, 60),
-    placeholder: cleanText(input?.placeholder, 100),
-    value: cleanText(input?.value, 120),
-    context: cleanText(input?.context, 160),
-    active: Boolean(input?.active) || cleanText(input?.targetId, 40) === activeId,
-    multiline: Boolean(input?.multiline),
-    box: normalizeBoxForPrompt(input?.box),
-    regionId: cleanText(input?.regionId, 40),
-    blockId: cleanText(input?.blockId, 40),
-  }));
-}
-
-function normalizeRelations(relations, budget) {
-  if (!budget.relationLimit || !Array.isArray(relations)) {
-    return [];
-  }
-
-  return relations.slice(0, budget.relationLimit).map((relation) => ({
-    type: cleanText(relation?.type, 40),
-    from: cleanText(relation?.from, 40),
-    to: cleanText(relation?.to, 40),
-    confidence: Number.isFinite(Number(relation?.confidence))
-      ? Number(relation.confidence)
-      : 0,
-  }));
-}
-
-function normalizeTargets(targets, budget, activeTargetId = "") {
-  if (!Array.isArray(targets)) {
-    return [];
-  }
-
-  const activeId = cleanText(activeTargetId, 40);
-  return targets.slice(0, budget.targetLimit).map((target) => ({
-    id: cleanText(target?.id, 40),
-    label: cleanText(target?.label, 120),
-    tag: cleanText(target?.tag, 24),
-    type: cleanText(target?.type || target?.tag, 40),
-    text: cleanText(target?.text, 120),
-    placeholder: cleanText(target?.placeholder, 80),
-    context: cleanText(target?.context, budget.targetContextLimit),
-    visibility: cleanText(target?.visibility || "visible", 40),
-    regionId: cleanText(target?.regionId, 40),
-    blockId: cleanText(target?.blockId, 40),
-    active: cleanText(target?.id, 40) === activeId,
-    interaction: normalizeInteraction(target?.interaction),
-    semantics: normalizeSemantics(target?.semantics),
-    box: normalizeBoxForPrompt(target?.box),
-    risk: target?.risk?.level || "none",
-  }));
-}
-
-function normalizeInteraction(interaction) {
-  if (!interaction || typeof interaction !== "object") {
-    return null;
-  }
-
-  return {
-    clickable: Boolean(interaction.clickable),
-    editable: Boolean(interaction.editable),
-    selectable: Boolean(interaction.selectable),
-    scrollable: Boolean(interaction.scrollable),
-  };
-}
-
-function normalizeSemantics(semantics) {
-  if (!semantics || typeof semantics !== "object") {
-    return null;
-  }
-
-  return {
-    kind: cleanText(semantics.kind, 40),
-    role: cleanText(semantics.role, 40),
-    intentHints: normalizeTargetIds(semantics.intentHints),
-    confidence: Number.isFinite(Number(semantics.confidence))
-      ? Number(semantics.confidence)
-      : 0,
-  };
-}
-
-function normalizeVisualMeta(visuals, budget) {
-  if (!Array.isArray(visuals)) {
-    return [];
-  }
-
-  return visuals.slice(0, budget.visualLimit).map((item) => ({
-    id: cleanText(item?.id, 40),
-    kind: cleanText(item?.kind || "visual", 40),
-    alt: cleanText(item?.alt, 100),
-    title: cleanText(item?.title, 100),
-    nearbyText: cleanText(item?.nearbyText, budget.visualTextLimit),
-    targetIds: normalizeTargetIds(item?.targetIds),
-    regionId: cleanText(item?.regionId, 40),
-    box: normalizeBoxForPrompt(item?.box),
-  }));
-}
-
-function normalizeBoxForPrompt(box) {
-  if (!box || typeof box !== "object") {
-    return null;
-  }
-
-  const values = {
-    x: Number(box.x),
-    y: Number(box.y),
-    width: Number(box.width),
-    height: Number(box.height),
-  };
-
-  if (!Object.values(values).every(Number.isFinite)) {
-    return null;
-  }
-
-  return {
-    x: Math.round(values.x),
-    y: Math.round(values.y),
-    width: Math.round(values.width),
-    height: Math.round(values.height),
-  };
-}
-
-function normalizeTargetIds(value) {
-  return Array.isArray(value)
-    ? value.map((targetId) => cleanText(targetId, 40)).filter(Boolean).slice(0, 6)
-    : [];
-}
-
 export function summarizeDecision(plan) {
   return {
     evaluationPreviousGoal: cleanText(plan?.decision?.evaluationPreviousGoal, 180),
@@ -954,14 +471,12 @@ export function toPromptText({ message, taskState, observations }) {
   const inputs = observations?.inputs || full.inputs || [];
   const relations = observations?.relations || full.relations || [];
 
-  // ── Task ──
   const goal = cleanText(message || taskState?.goal, 300);
   if (goal) {
     lines.push(`┌─ Task`);
     lines.push(`├─ ${goal}`);
   }
 
-  // ── Page State ──
   if (taskState && typeof taskState === "object") {
     const doneFlags = [];
     if (taskState.latestSubmittedText) doneFlags.push("submitted");
@@ -977,7 +492,6 @@ export function toPromptText({ message, taskState, observations }) {
     if (doneFlags.length) lines.push(`├─ flags: ${doneFlags.join(", ")}`);
   }
 
-  // ── History ──
   const history = taskState?.history || [];
   if (Array.isArray(history) && history.length) {
     lines.push(`┌─ History`);
@@ -995,167 +509,113 @@ export function toPromptText({ message, taskState, observations }) {
     });
   }
 
-  // ── Observations ──
-  lines.push(`┌─ Observations`);
-  const kind = diff ? "patch" : "full";
-  const mode = observations?.mode || observations?.focused?.intent || "";
-
-  // Page header
-  const title = cleanText(page.title, 120);
-  const url = cleanText(page.url, 300);
-  const scroll = pageState.scroll
-    ? `scroll=${pageState.scroll.y || 0}/${pageState.scroll.maxY || 0}`
-    : "";
-  const modal = pageState.hasModal ? "modal=yes" : "";
-  const overlay = pageState.hasOverlay ? "overlay=yes" : "";
-  const ready = pageState.readyState ? `ready=${pageState.readyState}` : "";
-  const stateBits = [ready, scroll, modal, overlay].filter(Boolean).join(", ");
-  const intentInfo = [kind, mode].filter(Boolean).join(", ");
-
-  lines.push(`├─ Page: ${title}`);
-  lines.push(`├─ URL: ${url}`);
-  if (stateBits) lines.push(`├─ State: ${stateBits}`);
-  if (intentInfo) lines.push(`├─ Mode: ${intentInfo}`);
-
-  // Diff summary (if patch)
-  if (diff) {
-    const d = diff.summary || {};
-    const diffBits = [];
-    if (d.activeChanged) diffBits.push("activeChanged");
-    if (d.scrollChanged) diffBits.push("scrollChanged");
-    if (d.newEditableInputs) diffBits.push(`inputs+${d.newEditableInputs}`);
-    if (d.actionButtons) diffBits.push(`buttons=${d.actionButtons}`);
-    if (d.targetsAdded) diffBits.push(`targets+${d.targetsAdded}`);
-    if (d.targetsUpdated) diffBits.push(`targets~${d.targetsUpdated}`);
-    if (d.targetsDisappeared) diffBits.push(`targets-${d.targetsDisappeared}`);
-    if (diffBits.length) lines.push(`├─ Changes: ${diffBits.join(", ")}`);
+  const modeLabel = diff ? "patch" : "full";
+  if (modeLabel) {
+    lines.push(`┌─ Observations (${modeLabel})`);
   }
 
-  // ── Intent-driven layer pruning ──
-  // Different intents need different data. Search/input tasks only need
-  // Inputs + Interactive + Recommended; content tasks need Content blocks;
-  // read tasks only need Content. Skip noise for the current intent.
-  const showRegions = mode === "general" || mode === "navigation_followup";
-  const showContent = mode !== "input_or_submit" && mode !== "input_after_selection";
-  const showInteractive = mode !== "read_or_extract";
-  const showInputs = mode !== "content_selection" && mode !== "read_or_extract";
-
-  // Regions
-  const totalRegions = (observations?.summary?.totalRegions) || regions.length;
-  if (showRegions && regions.length) {
-    lines.push(`├─ Regions (${regions.length}/${totalRegions} shown)`);
-    regions.forEach((region) => {
-      const id = cleanText(region.id, 20);
-      const role = cleanText(region.role || "section", 20);
-      const text = cleanText(region.text || region.label || "", 120);
-      const targetIds = normalizeTargetIds(region.targetIds).slice(0, 6).join(",");
-      const ref = targetIds ? ` → [${targetIds}]` : "";
-      lines.push(`│  [${id}] ${role}: "${text}"${ref}`);
-    });
+  const pageUrl = cleanText(page.url || state?.url || taskState?.url, 300);
+  const pageTitle = cleanText(page.title || state?.title, 120);
+  if (pageUrl) {
+    lines.push(`├─ URL: ${pageUrl}`);
   }
-
-  // Content blocks
-  const totalBlocks = (observations?.summary?.totalBlocks) || blocks.length;
-  if (showContent && blocks.length) {
-    lines.push(`├─ Content (${blocks.length}/${totalBlocks} shown)`);
-    blocks.forEach((block) => {
-      const id = cleanText(block.id, 20);
-      const kind = cleanText(block.kind || block.role || "content", 16);
-      const text = cleanText(block.text, 110);
-      const targetIds = normalizeTargetIds(block.targetIds).slice(0, 6).join(",");
-      const ref = targetIds ? ` → [${targetIds}]` : "";
-      lines.push(`│  [${id}] ${kind}: "${text}"${ref}`);
-    });
+  if (pageTitle) {
+    lines.push(`├─ Title: ${pageTitle}`);
   }
-
-  // Interactive elements (targets)
-  const totalTargets = (observations?.summary?.totalTargets) || targets.length;
-  if (showInteractive && targets.length) {
-    lines.push(`├─ Interactive (${targets.length}/${totalTargets} shown)`);
-    targets.forEach((target) => {
-      const tag = targetTypeTag(target);
-      const id = cleanText(target.id, 20);
-      const label = cleanText(target.label || target.text || target.placeholder, 80);
-      const context = cleanText(target.context, 60);
-      const type = cleanText(target.type || target.tag, 20);
-      const regionId = cleanShortId(target.regionId);
-      const blockId = cleanShortId(target.blockId);
-      const spatial = [regionId, blockId].filter(Boolean).join(",");
-      const contextPart = context && context !== label ? ` — ${context}` : "";
-      const spatialPart = spatial ? ` (${spatial})` : "";
-      const risk = target.risk === "high" || target.risk === "medium" ? ` risk:${target.risk}` : "";
-      const active = target.active ? " ← active" : "";
-      lines.push(`│  ${tag} [${id}] "${label}" ${type}${spatialPart}${contextPart}${risk}${active}`);
-    });
-  }
-
-  // Inputs
-  const totalInputs = (observations?.summary?.totalInputs) || inputs.length;
-  if (showInputs && inputs.length) {
-    lines.push(`├─ Inputs (${inputs.length}/${totalInputs} shown)`);
-    inputs.forEach((input) => {
-      const targetId = cleanText(input.targetId, 20);
-      const name = cleanText(input.name || input.placeholder || input.inputType, 60);
-      const type = cleanText(input.inputType, 20);
-      const context = cleanText(input.context, 60);
-      const contextPart = context && context !== name ? ` — ${context}` : "";
-      const active = input.active ? " ← active" : "";
-      const multiline = input.multiline ? " multiline" : "";
-      lines.push(`│  → [${targetId}] ${type} "${name}"${contextPart}${active}${multiline}`);
-    });
-  }
-
-  // Relations + Visuals disabled — structural metadata noise,
-  // not useful for action planning. Target IDs on Interactive elements
-  // already encode the spatial relationships that matter.
-
-  // Focused context
-  if (focused) {
-    const recommended = focused.recommendedActions || [];
-    if (recommended.length) {
-      const actions = recommended.slice(0, 6).map((item) => {
-        const actionType = item.action || item.type || "";
-        const targetId = cleanText(item.targetId, 20);
-        if (actionType === "scroll") {
-          return `scroll ${item.direction || "down"} ${item.amount || ""}`;
-        }
-        return `${actionType}${targetId ? ` [${targetId}]` : ""}`;
-      }).join(", ");
-      lines.push(`├─ Recommended: ${actions}`);
+  if (pageState && typeof pageState === "object") {
+    const stateParts = [];
+    if (pageState.readyState) stateParts.push(`ready: ${pageState.readyState}`);
+    if (pageState.hasModal) stateParts.push("modal");
+    if (pageState.hasOverlay) stateParts.push("overlay");
+    if (pageState.scroll) {
+      stateParts.push(`scroll: ${pageState.scroll.y}/${pageState.scroll.maxY}`);
+    }
+    if (stateParts.length) {
+      lines.push(`├─ State: ${stateParts.join(", ")}`);
     }
   }
 
-  // If diff has candidate actions, show them
-  if (diff?.candidateActions?.length) {
-    const candidates = diff.candidateActions.slice(0, 4).map((item) => {
-      const actionType = item.action || item.type || "";
-      const targetId = cleanText(item.targetId, 20);
-      return `${actionType}${targetId ? ` [${targetId}]` : ""}`;
-    }).join(", ");
-    if (candidates) lines.push(`├─ Diff candidates: ${candidates}`);
+  if (diff) {
+    lines.push(`├─ Changes: ${diff.summary?.activeChanged ? "active changed" : ""} ${diff.summary?.newEditableInputs ? `+${diff.summary.newEditableInputs} inputs` : ""} ${diff.summary?.actionButtons ? `${diff.summary.actionButtons} buttons` : ""}`.trim());
   }
+
+  buildRegionsSection(lines, regions, blocks.length);
+  buildContentSection(lines, blocks);
+  buildInteractiveSection(lines, targets);
+  buildInputsSection(lines, inputs);
+  buildRelationsSection(lines, relations);
+  buildRecommendedSection(lines, focused);
 
   return lines.join("\n");
 }
 
-function targetTypeTag(target) {
-  const interaction = target?.interaction || {};
-  if (interaction.editable) return "[Inp]";
-  if (interaction.selectable) return "[Sel]";
-  const tag = (target?.tag || "").toLowerCase();
-  const type = (target?.type || "").toLowerCase();
-  if (tag === "a" || type === "link") return "[Lnk]";
-  if (tag === "img" || tag === "svg" || type === "visual") return "[Img]";
-  if (interaction.clickable) return "[Btn]";
-  if (interaction.scrollable) return "[Scr]";
-  return "[Btn]";
+function buildRegionsSection(lines, regions, blockCount) {
+  if (!regions.length) return;
+  lines.push(`├─ Regions (${regions.length} shown)`);
+  regions.forEach((region) => {
+    const targetLabel = region.targetIds?.length ? ` → ${region.targetIds.slice(0, 4).join(", ")}` : "";
+    const blockLabel = region.blockIds?.length ? ` blocks: ${region.blockIds.slice(0, 4).join(", ")}` : "";
+    const inputLabel = region.inputIds?.length ? ` inputs: ${region.inputIds.slice(0, 4).join(", ")}` : "";
+    lines.push(`│  [${region.id}] ${region.role}: "${cleanText(region.text, 60)}"${targetLabel}${blockLabel}${inputLabel}`);
+  });
 }
 
-function cleanShortId(value) {
-  const cleaned = cleanText(value, 20);
-  if (!cleaned) return "";
-  return cleaned.replace(/^(region|content|target|input|visual)-/, (_, prefix) => {
-    const map = { region: "r", content: "c", target: "t", input: "inp", visual: "v" };
-    return map[prefix] || prefix;
+function buildContentSection(lines, blocks) {
+  if (!blocks.length) return;
+  lines.push(`├─ Content (${blocks.length} shown)`);
+  blocks.forEach((block) => {
+    const kindLabel = block.kind && block.kind !== "content" ? ` [${block.kind}]` : "";
+    const targetLabel = block.targetIds?.length ? ` → ${block.targetIds.slice(0, 4).join(", ")}` : "";
+    lines.push(`│  [${block.id}]${kindLabel}: "${cleanText(block.text, 80)}"${targetLabel}`);
+  });
+}
+
+function buildInteractiveSection(lines, targets) {
+  if (!targets.length) return;
+  lines.push(`├─ Interactive (${targets.length} shown)`);
+  targets.forEach((target) => {
+    const tagIcon = target.tag === "button" ? "[Btn]" : target.tag === "a" ? "[Lnk]" : target.interaction?.editable ? "[Inp]" : target.interaction?.selectable ? "[Sel]" : `[${target.tag?.toUpperCase() || "?"}]`;
+    const label = target.label || target.text || target.placeholder || "";
+    const typeInfo = target.type ? ` ${target.type}` : "";
+    const locationInfo = [target.regionId, target.blockId].filter(Boolean).join(",");
+    const locationStr = locationInfo ? ` (${locationInfo})` : "";
+    const contextInfo = target.context ? ` ${target.context}` : "";
+    const riskInfo = target.risk && target.risk !== "none" ? ` risk:${target.risk}` : "";
+    const activeInfo = target.active ? " ← active" : "";
+    lines.push(`│  ${tagIcon} [${target.id}] "${label}"${typeInfo}${locationStr}${contextInfo}${riskInfo}${activeInfo}`);
+  });
+}
+
+function buildInputsSection(lines, inputs) {
+  if (!inputs.length) return;
+  lines.push(`├─ Inputs (${inputs.length} shown)`);
+  inputs.forEach((input) => {
+    const typeInfo = input.inputType ? ` ${input.inputType}` : "";
+    const nameInfo = input.name ? ` "${input.name}"` : input.placeholder ? ` "${input.placeholder}"` : "";
+    const contextInfo = input.context ? ` ${input.context}` : "";
+    const activeInfo = input.active ? " ← active" : "";
+    const multilineInfo = input.multiline ? " multiline" : "";
+    lines.push(`│  → [${input.targetId}]${typeInfo}${nameInfo}${contextInfo}${activeInfo}${multilineInfo}`);
+  });
+}
+
+function buildRelationsSection(lines, relations) {
+  if (!relations.length) return;
+  lines.push(`├─ Relations (${relations.length} shown)`);
+  relations.forEach((relation) => {
+    lines.push(`│  [${relation.from}] ${relation.type} [${relation.to}]`);
+  });
+}
+
+function buildRecommendedSection(lines, focused) {
+  if (!focused?.recommendedActions?.length) return;
+  lines.push(`├─ Recommended`);
+  focused.recommendedActions.forEach((rec) => {
+    const details = [
+      rec.targetId ? `[${rec.targetId}]` : "",
+      rec.direction ? `dir:${rec.direction}` : "",
+      rec.amount ? `amount:${rec.amount}` : "",
+    ].filter(Boolean).join(" ");
+    lines.push(`│  ${rec.action} ${details} — ${rec.reason}`);
   });
 }

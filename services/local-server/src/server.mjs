@@ -44,113 +44,18 @@ const server = createServer(async (request, response) => {
     }
 
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
+    const route = findRoute(request.method, url.pathname);
 
-    if (request.method === "GET" && url.pathname === "/api/health") {
-      sendJson(response, 200, { ok: true });
+    if (!route) {
+      sendJson(response, 404, { error: "接口不存在。" });
       return;
     }
 
-    if (request.method === "GET" && url.pathname === "/api/settings") {
-      sendJson(response, 200, publicSettings(await loadSettings()));
-      return;
-    }
-
-    if (request.method === "PUT" && url.pathname === "/api/settings") {
-      const payload = await readJson(request);
-      const settings = await saveSettings(payload);
-      sendJson(response, 200, publicSettings(settings));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/extract/scrape") {
-      const payload = await readJson(request);
-      const ext = await getExtractor();
-      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
-      const result = await ext.scrapeUrl(payload.url, {
-        apiKey: payload.apiKey,
-        formats: payload.formats,
-        onlyMainContent: payload.onlyMainContent !== false,
-        waitFor: payload.waitFor,
-        timeout: payload.timeout,
-      });
-      sendJson(response, 200, result);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/extract/crawl") {
-      const payload = await readJson(request);
-      const ext = await getExtractor();
-      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
-      const result = await ext.crawlSite(payload.url, {
-        apiKey: payload.apiKey,
-        limit: payload.limit,
-        maxDepth: payload.maxDepth,
-      });
-      sendJson(response, 200, result);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/extract/batch-scrape") {
-      const payload = await readJson(request);
-      const ext = await getExtractor();
-      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
-      const result = await ext.batchScrape(payload.urls, {
-        apiKey: payload.apiKey,
-        formats: payload.formats,
-        onlyMainContent: payload.onlyMainContent !== false,
-      });
-      sendJson(response, 200, result);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/extract/map") {
-      const payload = await readJson(request);
-      const ext = await getExtractor();
-      if (!ext) { sendJson(response, 503, { error: "Firecrawl not available. Install firecrawl package." }); return; }
-      const result = await ext.mapSite(payload.url, {
-        apiKey: payload.apiKey,
-      });
-      sendJson(response, 200, result);
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/webview-cdp/status") {
-      sendJson(response, 200, await webViewCdpStatus());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/webview-cdp/execute") {
-      const payload = await readJson(request);
-      if (Array.isArray(payload?.actions)) {
-        sendJson(response, 200, {
-          results: await executeWebViewBrowserActions(payload, {
-            maxActions: 2,
-          }),
-        });
-        return;
-      }
-
-      sendJson(response, 200, await executeWebViewBrowserAction(payload));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/agent/observe") {
-      const payload = await readJson(request);
-      const result = buildExternalBrowserObservations(payload);
-      sendJson(response, 200, result);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/agent/plan") {
-      const payload = await readJson(request);
-      const result = await planExternalBrowserTurn(payload);
-      sendJson(response, 200, result);
-      return;
-    }
-
-    sendJson(response, 404, {
-      error: "接口不存在。",
-    });
+    const body = ["POST", "PUT"].includes(request.method)
+      ? await readJson(request)
+      : {};
+    const result = await route.handler({ body, request, response, url });
+    sendJson(response, result.status, result.body);
   } catch (error) {
     sendJson(response, 500, {
       error: error instanceof Error ? error.message : "本地服务异常。",
@@ -158,6 +63,127 @@ const server = createServer(async (request, response) => {
     });
   }
 });
+
+function findRoute(method, pathname) {
+  return ROUTES.get(`${method}:${pathname}`);
+}
+
+const ROUTES = new Map();
+
+ROUTES.set("GET:/api/health", {
+  handler: async () => ({
+    status: 200,
+    body: { ok: true },
+  }),
+});
+
+ROUTES.set("GET:/api/settings", {
+  handler: async () => ({
+    status: 200,
+    body: publicSettings(await loadSettings()),
+  }),
+});
+
+ROUTES.set("PUT:/api/settings", {
+  handler: async ({ body }) => {
+    const settings = await saveSettings(body);
+    return {
+      status: 200,
+      body: publicSettings(settings),
+    };
+  },
+});
+
+ROUTES.set("GET:/api/webview-cdp/status", {
+  handler: async () => ({
+    status: 200,
+    body: await webViewCdpStatus(),
+  }),
+});
+
+ROUTES.set("POST:/api/webview-cdp/execute", {
+  handler: async ({ body }) => {
+    if (Array.isArray(body?.actions)) {
+      return {
+        status: 200,
+        body: {
+          results: await executeWebViewBrowserActions(body, { maxActions: 2 }),
+        },
+      };
+    }
+    return {
+      status: 200,
+      body: await executeWebViewBrowserAction(body),
+    };
+  },
+});
+
+ROUTES.set("POST:/api/agent/observe", {
+  handler: async ({ body }) => ({
+    status: 200,
+    body: buildExternalBrowserObservations(body),
+  }),
+});
+
+ROUTES.set("POST:/api/agent/plan", {
+  handler: async ({ body }) => ({
+    status: 200,
+    body: await planExternalBrowserTurn(body),
+  }),
+});
+
+const extractRoutes = [
+  {
+    key: "POST:/api/extract/scrape",
+    handler: (ext, body) => ext.scrapeUrl(body.url, {
+      apiKey: body.apiKey,
+      formats: body.formats,
+      onlyMainContent: body.onlyMainContent !== false,
+      waitFor: body.waitFor,
+      timeout: body.timeout,
+    }),
+  },
+  {
+    key: "POST:/api/extract/crawl",
+    handler: (ext, body) => ext.crawlSite(body.url, {
+      apiKey: body.apiKey,
+      limit: body.limit,
+      maxDepth: body.maxDepth,
+    }),
+  },
+  {
+    key: "POST:/api/extract/batch-scrape",
+    handler: (ext, body) => ext.batchScrape(body.urls, {
+      apiKey: body.apiKey,
+      formats: body.formats,
+      onlyMainContent: body.onlyMainContent !== false,
+    }),
+  },
+  {
+    key: "POST:/api/extract/map",
+    handler: (ext, body) => ext.mapSite(body.url, {
+      apiKey: body.apiKey,
+    }),
+  },
+];
+
+for (const { key, handler } of extractRoutes) {
+  ROUTES.set(key, {
+    handler: async ({ body }) => {
+      const ext = await getExtractor();
+      if (!ext) {
+        return {
+          status: 503,
+          body: { error: "Firecrawl not available. Install firecrawl package." },
+        };
+      }
+      return {
+        status: 200,
+        body: await handler(ext, body),
+      };
+    },
+  });
+}
 
 server.on("error", (error) => {
   if (error?.code === "EADDRINUSE") {
