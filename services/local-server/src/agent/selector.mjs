@@ -27,21 +27,28 @@ export function scorePosition(box) {
   return Math.max(0, 80 - normalized.y / 12 - normalized.x / 40);
 }
 
+function selectByScore(items, { scorer, validator, limit }) {
+  return items
+    .map((item, index) => ({ value: item, score: scorer(item, index) }))
+    .filter((entry) => (validator ? validator(entry.value) : true))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((entry) => entry.value);
+}
+
 export function selectBlocks(blocks, budget, terms) {
   if (!Array.isArray(blocks)) {
     return [];
   }
 
-  return blocks
-    .map((block, index) => ({
-      block,
-      score: scoreTextMatch(block?.text, terms) * 100 +
-        scorePosition(block?.box) +
-        Math.max(0, 30 - index),
-    }))
-    .filter((item) => cleanText(item.block?.text, 20) || normalizeTargetIds(item.block?.targetIds).length)
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.contentLimit);
+  return selectByScore(blocks, {
+    scorer: (block, index) =>
+      scoreTextMatch(block?.text, terms) * 100 +
+      scorePosition(block?.box) +
+      Math.max(0, 30 - index),
+    validator: (block) => cleanText(block?.text, 20) || normalizeTargetIds(block?.targetIds).length,
+    limit: budget.contentLimit,
+  });
 }
 
 export function selectInputs(inputs, budget, terms, blockIds, options = {}) {
@@ -50,25 +57,18 @@ export function selectInputs(inputs, budget, terms, blockIds, options = {}) {
   }
 
   const activeTargetId = cleanText(options.activeTargetId, 40);
-  return inputs
-    .map((input, index) => ({
-      input,
-      score:
-        (input?.active || cleanText(input?.targetId, 40) === activeTargetId ? 220 : 0) +
-        (options.writing ? 80 : 0) +
-        scoreTextMatch(
-          [input?.name, input?.placeholder, input?.inputType, input?.context]
-            .filter(Boolean)
-            .join(" "),
-          terms,
-        ) *
-          120 +
-        (blockIds.has(cleanText(input?.blockId, 40)) ? 60 : 0) +
-        Math.max(0, 20 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.inputLimit)
-    .map((item) => item.input);
+  return selectByScore(inputs, {
+    scorer: (input, index) =>
+      (input?.active || cleanText(input?.targetId, 40) === activeTargetId ? 220 : 0) +
+      (options.writing ? 80 : 0) +
+      scoreTextMatch(
+        [input?.name, input?.placeholder, input?.inputType, input?.context].filter(Boolean).join(" "),
+        terms,
+      ) * 120 +
+      (blockIds.has(cleanText(input?.blockId, 40)) ? 60 : 0) +
+      Math.max(0, 20 - index),
+    limit: budget.inputLimit,
+  });
 }
 
 export function selectTargets(targets, budget, terms, blockIds, pinnedTargetIds, options = {}) {
@@ -77,38 +77,29 @@ export function selectTargets(targets, budget, terms, blockIds, pinnedTargetIds,
   }
 
   const activeTargetId = cleanText(options.activeTargetId, 40);
-  return targets
-    .map((target, index) => ({
-      target,
-      score:
-        (cleanText(target?.id, 40) === activeTargetId ? 220 : 0) +
-        (pinnedTargetIds.has(cleanText(target?.id, 40)) ? 120 : 0) +
-        (blockIds.has(cleanText(target?.blockId, 40)) ? 80 : 0) +
-        scoreTextMatch(
-          [
-            target?.label,
-            target?.text,
-            target?.placeholder,
-            target?.context,
-            target?.semantics?.kind,
-            target?.semantics?.role,
-            ...(Array.isArray(target?.semantics?.intentHints)
-              ? target.semantics.intentHints
-              : []),
-          ]
-            .filter(Boolean)
-            .join(" "),
-          terms,
-        ) *
-          150 +
-        (target?.interaction?.editable ? (options.writing ? 120 : 45) : 0) +
-        (target?.interaction?.clickable ? 25 : 0) +
-        scorePosition(target?.box) +
-        Math.max(0, 20 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.targetLimit)
-    .map((item) => item.target);
+  return selectByScore(targets, {
+    scorer: (target, index) =>
+      (cleanText(target?.id, 40) === activeTargetId ? 220 : 0) +
+      (pinnedTargetIds.has(cleanText(target?.id, 40)) ? 120 : 0) +
+      (blockIds.has(cleanText(target?.blockId, 40)) ? 80 : 0) +
+      scoreTextMatch(
+        [
+          target?.label,
+          target?.text,
+          target?.placeholder,
+          target?.context,
+          target?.semantics?.kind,
+          target?.semantics?.role,
+          ...(Array.isArray(target?.semantics?.intentHints) ? target.semantics.intentHints : []),
+        ].filter(Boolean).join(" "),
+        terms,
+      ) * 150 +
+      (target?.interaction?.editable ? (options.writing ? 120 : 45) : 0) +
+      (target?.interaction?.clickable ? 25 : 0) +
+      scorePosition(target?.box) +
+      Math.max(0, 20 - index),
+    limit: budget.targetLimit,
+  });
 }
 
 export function selectRegions(regions, budget, blocks, targets, inputs) {
@@ -126,20 +117,16 @@ export function selectRegions(regions, budget, blocks, targets, inputs) {
       .filter(Boolean),
   );
 
-  return regions
-    .map((region, index) => ({
-      region,
-      score:
-        (usedIds.has(cleanText(region?.id, 40)) ? 100 : 0) +
-        (["main", "dialog", "alertdialog", "form", "search"].includes(cleanText(region?.role, 40).toLowerCase())
-          ? 50
-          : 0) +
-        scorePosition(region?.box) +
-        Math.max(0, 12 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.regionLimit)
-    .map((item) => item.region);
+  return selectByScore(regions, {
+    scorer: (region, index) =>
+      (usedIds.has(cleanText(region?.id, 40)) ? 100 : 0) +
+      (["main", "dialog", "alertdialog", "form", "search"].includes(cleanText(region?.role, 40).toLowerCase())
+        ? 50
+        : 0) +
+      scorePosition(region?.box) +
+      Math.max(0, 12 - index),
+    limit: budget.regionLimit,
+  });
 }
 
 export function selectRelations(relations, budget, ids) {
@@ -168,20 +155,16 @@ export function selectVisuals(visuals, budget, terms, targetIds, regionIds) {
     return [];
   }
 
-  return visuals
-    .map((visual, index) => ({
-      visual,
-      score:
-        scoreTextMatch([visual?.alt, visual?.title, visual?.nearbyText].filter(Boolean).join(" "), terms) *
-          80 +
-        (regionIds.has(cleanText(visual?.regionId, 40)) ? 25 : 0) +
-        (normalizeTargetIds(visual?.targetIds).some((targetId) => targetIds.has(targetId)) ? 60 : 0) +
-        scorePosition(visual?.box) +
-        Math.max(0, 10 - index),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, budget.visualLimit)
-    .map((item) => item.visual);
+  return selectByScore(visuals, {
+    scorer: (visual, index) =>
+      scoreTextMatch([visual?.alt, visual?.title, visual?.nearbyText].filter(Boolean).join(" "), terms) *
+        80 +
+      (regionIds.has(cleanText(visual?.regionId, 40)) ? 25 : 0) +
+      (normalizeTargetIds(visual?.targetIds).some((targetId) => targetIds.has(targetId)) ? 60 : 0) +
+      scorePosition(visual?.box) +
+      Math.max(0, 10 - index),
+    limit: budget.visualLimit,
+  });
 }
 
 export function selectPromptSlice({ budget, message, progress, state }) {

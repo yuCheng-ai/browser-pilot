@@ -43,102 +43,83 @@ function abortAfter(ms) {
   return controller.signal;
 }
 
-export async function requestPlan({ apiKey, body, budget, model, timeoutMs }) {
+async function requestLLM({ apiKey, model, system, messages, maxTokens, temperature, thinking, timeoutMs, parser, onEmptyContent, budgetName }) {
   try {
-    const { system, messages } = splitSystemMessages(body.messages);
     const result = await generateText({
       model: getClient(apiKey)(model),
       system,
       messages,
-      maxTokens: body.max_tokens,
-      temperature: body.temperature,
+      maxTokens,
+      temperature,
       providerOptions: {
         deepseek: {
-          thinking: body.thinking || { type: "disabled" },
+          thinking: thinking || { type: "disabled" },
         },
       },
-      abortSignal: abortAfter(timeoutMs || 12000),
+      abortSignal: abortAfter(timeoutMs),
     });
 
     const content = result.text;
     if (!content) {
+      if (onEmptyContent) return onEmptyContent(result);
       throw emptyContentError(
         { choices: [{ message: { content: "" }, finish_reason: result.finishReason }] },
-        { budget, model },
+        { budget: { name: budgetName }, model },
       );
     }
 
-    return parsePlan(content);
+    return parser(content);
   } catch (error) {
     throw annotateAgentError(error);
   }
+}
+
+export async function requestPlan({ apiKey, body, budget, model, timeoutMs }) {
+  const { system, messages } = splitSystemMessages(body.messages);
+  return requestLLM({
+    apiKey, model, system, messages,
+    maxTokens: body.max_tokens,
+    temperature: body.temperature,
+    thinking: body.thinking,
+    timeoutMs: timeoutMs || 12000,
+    parser: parsePlan,
+    budgetName: budget?.name,
+  });
 }
 
 export async function requestIntentPlan({ apiKey, body, model, timeoutMs }) {
-  try {
-    const { system, messages } = splitSystemMessages(body.messages);
-    const result = await generateText({
-      model: getClient(apiKey)(model),
-      system,
-      messages,
-      maxTokens: body.max_tokens,
-      temperature: body.temperature,
-      providerOptions: {
-        deepseek: {
-          thinking: { type: "disabled" },
-        },
-      },
-      abortSignal: abortAfter(timeoutMs || intentBudget.timeoutMs),
-    });
-
-    const content = result.text;
-    if (!content) {
-      throw emptyContentError(
-        { choices: [{ message: { content: "" }, finish_reason: result.finishReason }] },
-        { budget: intentBudget, model },
-      );
-    }
-
-    return parseIntentPlan(content);
-  } catch (error) {
-    throw annotateAgentError(error);
-  }
+  const { system, messages } = splitSystemMessages(body.messages);
+  return requestLLM({
+    apiKey, model, system, messages,
+    maxTokens: body.max_tokens,
+    temperature: body.temperature,
+    thinking: body.thinking,
+    timeoutMs: timeoutMs || intentBudget.timeoutMs,
+    parser: parseIntentPlan,
+    budgetName: "intent",
+  });
 }
 
 export async function requestLoopJudgement({ apiKey, loopState, model, timeoutMs }) {
-  try {
-    const { system, messages } = splitSystemMessages(buildLoopJudgeRequestBody({ loopState, model }).messages);
-    const result = await generateText({
-      model: getClient(apiKey)(model),
-      system,
-      messages,
-      maxTokens: loopJudgeBudget.maxTokens,
-      temperature: 0,
-      providerOptions: {
-        deepseek: {
-          thinking: { type: "disabled" },
-        },
-      },
-      abortSignal: abortAfter(timeoutMs || loopJudgeBudget.timeoutMs),
-    });
-
-    const content = result.text;
-    if (!content) {
-      return {
-        status: "progressing",
-        confidence: 0.5,
-        shouldContinue: true,
-        shouldChangeStrategy: false,
-        reason: "LoopJudge LLM returned empty content; defaulting to progressing.",
-        recommendedNextStrategy: "",
-        risk: "low",
-      };
-    }
-
-    return parseLoopJudgement(content);
-  } catch (error) {
-    throw annotateAgentError(error);
-  }
+  const { system, messages } = splitSystemMessages(buildLoopJudgeRequestBody({ loopState, model }).messages);
+  return requestLLM({
+    apiKey, model, system, messages,
+    maxTokens: loopJudgeBudget.maxTokens,
+    temperature: 0,
+    thinking: { type: "disabled" },
+    timeoutMs: timeoutMs || loopJudgeBudget.timeoutMs,
+    parser: parseLoopJudgement,
+    onEmptyContent: () => ({
+      status: "progressing",
+      confidence: 0.5,
+      shouldContinue: true,
+      shouldChangeStrategy: false,
+      reason: "LoopJudge LLM returned empty content; defaulting to progressing.",
+      recommendedNextStrategy: "",
+      risk: "low",
+    }),
+    budgetName: "loopJudge",
+  });
 }
 
 export function buildIntentRequestBody({ message, model, progress }) {
@@ -484,36 +465,37 @@ export function isRetryableDeepSeekError(error) {
   return false;
 }
 
+const errorDecorators = [
+  {
+    check: isAbortError,
+    apply: (error) => {
+      const wrapped = new Error("Request timed out");
+      wrapped.retryable = true;
+      return wrapped;
+    },
+  },
+  {
+    check: isNetworkError,
+    apply: (error) => { error.retryable = true; return error; },
+  },
+  {
+    check: (error) => (error?.statusCode || error?.providerStatus || 0) >= 500,
+    apply: (error) => { error.retryable = true; return error; },
+  },
+  {
+    check: (error) => (error?.statusCode || error?.providerStatus) === 429,
+    apply: (error) => { error.retryable = true; return error; },
+  },
+  {
+    check: isModelCompatibilityError,
+    apply: (error) => { error.retryable = true; error.skipModel = true; return error; },
+  },
+];
+
 function annotateAgentError(error) {
-  if (isAbortError(error)) {
-    const wrapped = new Error("Request timed out");
-    wrapped.retryable = true;
-    return wrapped;
+  for (const { check, apply } of errorDecorators) {
+    if (check(error)) return apply(error);
   }
-
-  // Network-level errors (DNS, TCP reset, connection refused) are always retryable
-  if (isNetworkError(error)) {
-    error.retryable = true;
-    return error;
-  }
-
-  const status = error?.statusCode || error?.providerStatus || 0;
-  if (status >= 500) {
-    error.retryable = true;
-    return error;
-  }
-
-  if (status === 429) {
-    error.retryable = true;
-    return error;
-  }
-
-  if (status === 400 && isModelCompatibilityError(error)) {
-    error.retryable = true;
-    error.skipModel = true;
-    return error;
-  }
-
   error.retryable = false;
   return error;
 }

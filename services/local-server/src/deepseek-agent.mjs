@@ -136,6 +136,21 @@ async function planWithBudget({ apiKey, model, message, observation, state, prog
   let lastError = null;
   const attempts = [];
 
+  function buildPlanDebug({ plan, extraAttempts = [], repaired = false, repairSource = null }) {
+    const debug = {
+      model: candidateModel,
+      budget: budget.name,
+      retries: attempts.length,
+      previousError: attempts.at(-1)?.error || "",
+      observation: summarizeObservations(observations),
+      attempts: [...attempts, ...extraAttempts],
+      decision: summarizeDecision(plan),
+    };
+    if (repaired) debug.repaired = true;
+    if (repairSource) debug.repairSource = repairSource;
+    return debug;
+  }
+
   for (const candidateModel of modelCandidates(model)) {
     for (const budget of budgets) {
       const taskState = buildTaskState({ message, progress, state });
@@ -188,14 +203,9 @@ async function planWithBudget({ apiKey, model, message, observation, state, prog
           if (candidateRepair) {
             return {
               ...candidateRepair,
-              debug: {
-                model: candidateModel,
-                budget: budget.name,
-                retries: attempts.length,
-                previousError: attempts.at(-1)?.error || "",
-                observation: summarizeObservations(observations),
-                attempts: [
-                  ...attempts,
+              debug: buildPlanDebug({
+                plan: candidateRepair,
+                extraAttempts: [
                   successAttempt,
                   {
                     stage: "candidate-repair",
@@ -206,10 +216,9 @@ async function planWithBudget({ apiKey, model, message, observation, state, prog
                     error: "",
                   },
                 ],
-                decision: summarizeDecision(candidateRepair),
                 repaired: true,
                 repairSource: "observation-candidate",
-              },
+              }),
             };
           }
 
@@ -251,16 +260,11 @@ async function planWithBudget({ apiKey, model, message, observation, state, prog
             if (!shouldRetryNoAction(repairedPlan, { message, progress, state })) {
               return {
                 ...repairedPlan,
-                debug: {
-                  model: candidateModel,
-                  budget: budget.name,
-                  retries: attempts.length,
-                  previousError: attempts.at(-1)?.error || "",
-                  observation: summarizeObservations(observations),
-                  attempts: [...attempts, successAttempt, repairSuccessAttempt],
-                  decision: summarizeDecision(repairedPlan),
+                debug: buildPlanDebug({
+                  plan: repairedPlan,
+                  extraAttempts: [successAttempt, repairSuccessAttempt],
                   repaired: true,
-                },
+                }),
               };
             }
 
@@ -286,15 +290,10 @@ async function planWithBudget({ apiKey, model, message, observation, state, prog
 
         return {
           ...plan,
-          debug: {
-            model: candidateModel,
-            budget: budget.name,
-            retries: attempts.length,
-            previousError: attempts.at(-1)?.error || "",
-            observation: summarizeObservations(observations),
-            attempts: [...attempts, successAttempt],
-            decision: summarizeDecision(plan),
-          },
+          debug: buildPlanDebug({
+            plan,
+            extraAttempts: [successAttempt],
+          }),
         };
       } catch (error) {
         lastError = error;

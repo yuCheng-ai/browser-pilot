@@ -5,7 +5,7 @@ export async function webViewCdpStatus(options = {}) {
   const targets = await listTargets(options);
   const pages = targets
     .filter((target) => target.type === "page")
-    .map((target) => ({
+    .map((target) => ({ 
       title: target.title || "",
       url: target.url || "",
       id: target.id || "",
@@ -63,182 +63,97 @@ export async function executeWebViewCdpAction({ action, state }, options = {}) {
   }
 }
 
-const ACTION_HANDLERS = new Map([
-  ["navigate", execNavigate],
-  ["click", execClick],
-  ["type", execType],
-  ["scroll", execScroll],
-  ["refresh", execRefresh],
-  ["go_back", execGoBack],
-  ["go_forward", execGoForward],
-]);
-
-async function execNavigate({ cdp, action, beforePageState, beforeFingerprint }) {
-  const url = normalizeUrl(action.url);
-  await cdp.send("Page.navigate", { url });
-  const progress = await waitForPageProgress(cdp, beforePageState, {
-    actionType: "navigate",
-  });
+function buildActionResult({ beforeFingerprint, beforePageState, progress, action, state, targetInfo, point, stateTarget, replyText }) {
   return {
-    ...progressResult({
-      beforeFingerprint,
-      beforePageState,
-      progress,
-    }),
-    reply: progress.changed
-      ? `已通过 CDP 打开 ${url}。`
-      : `已通过 CDP 打开 ${url}，但未检测到页面变化。`,
-    action: "navigate",
-    url: progress.afterPageState?.url || url,
-    point: null,
-    target: null,
-  };
-}
-
-async function execClick({ cdp, action, state, stateTarget, beforePageState, beforeFingerprint, targetInfo }) {
-  const { point } = await locateTarget(cdp, action.targetId, stateTarget);
-  await dispatchClick(cdp, point);
-  const progress = await waitForPageProgress(cdp, beforePageState, {
-    actionType: "click",
-  });
-
-  return {
-    ...progressResult({
-      beforeFingerprint,
-      beforePageState,
-      progress,
-    }),
-    reply: progress.changed
-      ? `已通过 CDP 点击 ${stateTarget?.label || action.targetId}。`
-      : `已通过 CDP 点击 ${stateTarget?.label || action.targetId}，但未检测到页面变化。`,
-    action: "click",
+    ...progressResult({ beforeFingerprint, beforePageState, progress }),
+    reply: replyText,
+    action: action.type,
     url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-    point,
+    point: point || null,
     target: stateTarget || null,
   };
 }
 
-async function execType({ cdp, action, state, stateTarget, beforePageState, beforeFingerprint, targetInfo }) {
-  const { point } = await locateTarget(cdp, action.targetId, stateTarget);
-  await dispatchClick(cdp, point);
-  await selectAll(cdp);
-  await cdp.send("Input.insertText", {
-    text: String(action.text || ""),
+async function execSimpleAction({ cdp, action, state, beforePageState, beforeFingerprint, targetInfo, execute, replyText }) {
+  await execute(cdp, action);
+  const progress = await waitForPageProgress(cdp, beforePageState, { actionType: action.type });
+  return buildActionResult({
+    beforeFingerprint, beforePageState, progress, action, state, targetInfo,
+    point: null, stateTarget: null,
+    replyText: typeof replyText === "function" ? replyText(progress) : replyText,
   });
-
-  if (action.submit) {
-    await pressEnter(cdp);
-  }
-
-  const progress = await waitForPageProgress(cdp, beforePageState, {
-    actionType: "type",
-  });
-  return {
-    ...progressResult({
-      beforeFingerprint,
-      beforePageState,
-      progress,
-    }),
-    reply: action.submit
-      ? progress.changed
-        ? `已通过 CDP 输入并提交：${action.text || ""}。`
-        : "已通过 CDP 输入并尝试提交，但未检测到页面变化。"
-      : `已通过 CDP 输入：${action.text || ""}。`,
-    action: "type",
-    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-    point,
-    target: stateTarget || null,
-  };
 }
 
-async function execScroll({ cdp, action, state, stateTarget, beforePageState, beforeFingerprint, targetInfo }) {
+async function execPointAction({ cdp, action, state, stateTarget, beforePageState, beforeFingerprint, targetInfo, execute, replyText }) {
   const point = action.targetId
     ? (await locateTarget(cdp, action.targetId, stateTarget)).point
     : await viewportCenter(cdp);
-  const amount = Math.max(80, Math.min(1800, Number(action.amount) || 650));
-  const deltaY = action.direction === "up" ? -amount : amount;
-  await dispatchWheel(cdp, point, deltaY);
-  const progress = await waitForPageProgress(cdp, beforePageState, {
-    actionType: "scroll",
+  await execute(cdp, action, point);
+  const progress = await waitForPageProgress(cdp, beforePageState, { actionType: action.type });
+  return buildActionResult({
+    beforeFingerprint, beforePageState, progress, action, state, targetInfo,
+    point, stateTarget: action.targetId ? stateTarget : null,
+    replyText: typeof replyText === "function" ? replyText(progress) : replyText,
   });
-  return {
-    ...progressResult({
-      beforeFingerprint,
-      beforePageState,
-      progress,
-    }),
-    reply: progress.changed
-      ? `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动。`
-      : `已通过 CDP ${action.direction === "up" ? "向上" : "向下"}滚动，但未检测到页面变化。`,
-    action: "scroll",
-    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-    point,
-    target: stateTarget || null,
-  };
 }
 
-async function execRefresh({ cdp, action, state, beforePageState, beforeFingerprint, targetInfo }) {
-  await cdp.send("Page.reload");
-  const progress = await waitForPageProgress(cdp, beforePageState, {
-    actionType: "refresh",
-  });
-  return {
-    ...progressResult({
-      beforeFingerprint,
-      beforePageState,
-      progress,
-    }),
-    reply: progress.changed
-      ? "已刷新页面。"
-      : "已刷新页面，但未检测到页面变化。",
-    action: "refresh",
-    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-    point: null,
-    target: null,
-  };
-}
-
-async function execGoBack({ cdp, action, state, beforePageState, beforeFingerprint, targetInfo }) {
-  await evaluate(cdp, "history.back()");
-  const progress = await waitForPageProgress(cdp, beforePageState, {
-    actionType: "go_back",
-  });
-  return {
-    ...progressResult({
-      beforeFingerprint,
-      beforePageState,
-      progress,
-    }),
-    reply: progress.changed
-      ? "已返回上一页。"
-      : "已尝试返回上一页，但未检测到页面变化。",
-    action: "go_back",
-    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-    point: null,
-    target: null,
-  };
-}
-
-async function execGoForward({ cdp, action, state, beforePageState, beforeFingerprint, targetInfo }) {
-  await evaluate(cdp, "history.forward()");
-  const progress = await waitForPageProgress(cdp, beforePageState, {
-    actionType: "go_forward",
-  });
-  return {
-    ...progressResult({
-      beforeFingerprint,
-      beforePageState,
-      progress,
-    }),
-    reply: progress.changed
-      ? "已前进到下一页。"
-      : "已尝试前进，但未检测到页面变化。",
-    action: "go_forward",
-    url: progress.afterPageState?.url || state?.url || targetInfo.url || "",
-    point: null,
-    target: null,
-  };
-}
+const ACTION_HANDLERS = new Map([
+  ["navigate", (ctx) => execSimpleAction({
+    ...ctx,
+    execute: async (cdp, action) => {
+      await cdp.send("Page.navigate", { url: normalizeUrl(action.url) });
+    },
+    replyText: (progress) => progress.changed
+      ? `已通过 CDP 打开 ${normalizeUrl(ctx.action.url)}。`
+      : `已通过 CDP 打开 ${normalizeUrl(ctx.action.url)}，但未检测到页面变化。`,
+  })],
+  ["click", (ctx) => execPointAction({
+    ...ctx,
+    execute: async (cdp, _action, point) => { await new CdpInput(cdp).click(point); },
+    replyText: (progress) => progress.changed
+      ? `已通过 CDP 点击 ${ctx.stateTarget?.label || ctx.action.targetId}。`
+      : `已通过 CDP 点击 ${ctx.stateTarget?.label || ctx.action.targetId}，但未检测到页面变化。`,
+  })],
+  ["type", (ctx) => execPointAction({
+    ...ctx,
+    execute: async (cdp, action, point) => {
+      const input = new CdpInput(cdp);
+      await input.click(point).selectAll().type(action.text || "");
+      if (action.submit) await input.enter();
+    },
+    replyText: (progress) => ctx.action.submit
+      ? (progress.changed
+        ? `已通过 CDP 输入并提交：${ctx.action.text || ""}。`
+        : "已通过 CDP 输入并尝试提交，但未检测到页面变化。")
+      : `已通过 CDP 输入：${ctx.action.text || ""}。`,
+  })],
+  ["scroll", (ctx) => execPointAction({
+    ...ctx,
+    execute: async (cdp, action, point) => {
+      const amount = Math.max(80, Math.min(1800, Number(action.amount) || 650));
+      const deltaY = action.direction === "up" ? -amount : amount;
+      await new CdpInput(cdp).wheel(point, deltaY);
+    },
+    replyText: (progress) => progress.changed
+      ? `已通过 CDP ${ctx.action.direction === "up" ? "向上" : "向下"}滚动。`
+      : `已通过 CDP ${ctx.action.direction === "up" ? "向上" : "向下"}滚动，但未检测到页面变化。`,
+  })],
+  ["refresh", (ctx) => execSimpleAction({
+    ...ctx,
+    execute: async (cdp) => { await cdp.send("Page.reload"); },
+    replyText: (progress) => progress.changed ? "已刷新页面。" : "已刷新页面，但未检测到页面变化。",
+  })],
+  ["go_back", (ctx) => execSimpleAction({
+    ...ctx,
+    execute: async (cdp) => { await evaluate(cdp, "history.back()"); },
+    replyText: (progress) => progress.changed ? "已返回上一页。" : "已尝试返回上一页，但未检测到页面变化。",
+  })],
+  ["go_forward", (ctx) => execSimpleAction({
+    ...ctx,
+    execute: async (cdp) => { await evaluate(cdp, "history.forward()"); },
+    replyText: (progress) => progress.changed ? "已前进到下一页。" : "已尝试前进，但未检测到页面变化。",
+  })],
+]);
 
 async function findTargetInfo(expectedUrl, options) {
   const targets = await listTargets(options);
@@ -622,6 +537,35 @@ async function evaluate(cdp, expression) {
   }
 
   return response.result?.value;
+}
+
+class CdpInput {
+  constructor(cdp) { this.cdp = cdp; }
+
+  async click(point) {
+    await dispatchClick(this.cdp, point);
+    return this;
+  }
+
+  async selectAll() {
+    await selectAll(this.cdp);
+    return this;
+  }
+
+  async type(text) {
+    await this.cdp.send("Input.insertText", { text: String(text || "") });
+    return this;
+  }
+
+  async enter() {
+    await pressEnter(this.cdp);
+    return this;
+  }
+
+  async wheel(point, deltaY) {
+    await dispatchWheel(this.cdp, point, deltaY);
+    return this;
+  }
 }
 
 async function dispatchClick(cdp, point) {
